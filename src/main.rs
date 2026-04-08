@@ -14,6 +14,22 @@ async fn health() -> impl Responder {
     }))
 }
 
+fn create_cors() -> Cors {
+    let allowed_origins = env::var("CORS_ALLOWED_ORIGINS").unwrap_or_else(|_| "*".to_string());
+    let mut cors = Cors::default()
+        .allow_any_method()
+        .allow_any_header();
+
+    if allowed_origins == "*" {
+        cors = cors.allow_any_origin();
+    } else {
+        for origin in allowed_origins.split(',') {
+            cors = cors.allowed_origin(origin.trim());
+        }
+    }
+    cors.supports_credentials()
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenv().ok();
@@ -26,7 +42,7 @@ async fn main() -> std::io::Result<()> {
     println!("git-agent running on http://0.0.0.0:{port}");
 
     HttpServer::new(|| {
-        let cors = Cors::permissive(); // tighten in production
+        let cors = create_cors();
 
         App::new()
             .wrap(cors)
