@@ -39,7 +39,12 @@ async fn main() -> std::io::Result<()> {
         .parse()
         .expect("PORT must be a valid port number");
 
-    println!("git-agent running on http://0.0.0.0:{port}");
+    // Bind to all interfaces by default so other containers on the docker
+    // network can reach this service. NEVER bind to 127.0.0.1 in a container —
+    // it would only be reachable from inside the container itself.
+    let bind_addr = env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0".to_string());
+
+    println!("git-agent listening on http://{bind_addr}:{port}");
 
     HttpServer::new(|| {
         let cors = create_cors();
@@ -47,6 +52,10 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(cors)
             .service(health)
+            .route(
+                "/repositories",
+                web::get().to(repositories::list_repositories),
+            )
             .route(
                 "/repositories",
                 web::post().to(repositories::create_repository),
@@ -84,7 +93,7 @@ async fn main() -> std::io::Result<()> {
                 web::delete().to(repositories::delete_blob),
             )
     })
-    .bind(("0.0.0.0", port))?
+    .bind((bind_addr.as_str(), port))?
     .run()
     .await
 }

@@ -64,7 +64,48 @@ pub struct Repository {
     pub created_at: String,
 }
 
-// ── Handler ──────────────────────────────────────────────────────────────────
+// ── Handlers ─────────────────────────────────────────────────────────────────
+
+/// `GET /repositories`
+///
+/// Lists all bare Git repositories owned by the authenticated user.
+pub async fn list_repositories(req: HttpRequest) -> HttpResponse {
+    let claims = match require_auth(&req) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let repos_root = env::var("REPOS_DIR").unwrap_or_else(|_| "./repos".to_string());
+    let user_dir = format!("{repos_root}/{}", claims.sub);
+
+    let entries = match fs::read_dir(&user_dir) {
+        Ok(e) => e,
+        Err(_) => {
+            // Directory doesn't exist yet — user has no repos
+            return HttpResponse::Ok().json(Vec::<Repository>::new());
+        }
+    };
+
+    let mut repos: Vec<Repository> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let raw_name = entry.file_name();
+            let dir_name = raw_name.to_string_lossy();
+            // Strip the ".git" suffix that bare repos have
+            let name = dir_name.strip_suffix(".git").unwrap_or(&dir_name).to_string();
+            repos.push(Repository {
+                id: Uuid::new_v4().to_string(),
+                name,
+                owner: claims.sub.clone(),
+                path: path.to_string_lossy().to_string(),
+                created_at: String::new(),
+            });
+        }
+    }
+
+    HttpResponse::Ok().json(repos)
+}
 
 /// `POST /repositories`
 ///
