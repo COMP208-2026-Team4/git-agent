@@ -2,7 +2,9 @@ use actix_web::{web, HttpRequest, HttpResponse};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, env, process::Command, sync::Mutex};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::{env, fs, process::Command};
 use uuid::Uuid;
 
 use crate::auth::require_auth;
@@ -23,10 +25,13 @@ fn is_safe_segment(s: &str) -> bool {
 }
 
 /// Verify the caller's claims allow access to `owner`. Returns an HTTP error
-/// response if the path owner does not match `claims.sub`.
-fn ensure_owner(owner: &str, claims_sub: &str) -> Result<(), HttpResponse> {
-    if owner == claims_sub {
-        Ok(())
+/// response if the path owner does not match either `claims.sub` or
+/// `claims.username`.
+///
+/// Returns the canonical owner segment used for on-disk storage (`claims.sub`).
+fn ensure_owner(owner: &str, claims_sub: &str, claims_username: &str) -> Result<String, HttpResponse> {
+    if owner == claims_sub || owner.eq_ignore_ascii_case(claims_username) {
+        Ok(claims_sub.to_string())
     } else {
         Err(HttpResponse::Forbidden()
             .json(serde_json::json!({"error": "forbidden"})))
@@ -36,8 +41,7 @@ fn ensure_owner(owner: &str, claims_sub: &str) -> Result<(), HttpResponse> {
 /// Per-repository write lock used to serialise plumbing-based file writes so
 /// the bare repository's index file is never read/modified by two writers
 /// concurrently.
-fn write_lock(repo: &str) -> std::sync::Arc<Mutex<()>> {
-    use std::sync::{Arc, OnceLock};
+fn write_lock(repo: &str) -> Arc<Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
     let map = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = map.lock().unwrap();
@@ -201,8 +205,8 @@ fn require_owner(
         return Err(HttpResponse::BadRequest()
             .json(serde_json::json!({"error": "invalid path segment"})));
     }
-    ensure_owner(owner, &claims.sub)?;
-    Ok(repo_path(owner, repo))
+    let canonical_owner = ensure_owner(owner, &claims.sub, &claims.username)?;
+    Ok(repo_path(&canonical_owner, repo))
 }
 
 #[derive(Debug, Deserialize)]
@@ -567,10 +571,32 @@ fn run_write_sequence(
     let lock = write_lock(repo_dir);
     let _guard = lock.lock().unwrap();
 
-    // Read the branch's tree into the index.
-    let read_tree = Command::new("git")
-        .args(["-C", repo_dir, "read-tree", branch])
-        .output();
+    let branch_ref = format!("refs/heads/{branch}");
+    let parent_out = Command::new("git")
+        .args(["-C", repo_dir, "rev-parse", "--verify", &branch_ref])
+        .output()
+        .map_err(|e| {
+            eprintln!("[repos] rev-parse error: {e}");
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "rev-parse failed"}))
+        })?;
+    let parent_sha = if parent_out.status.success() {
+        Some(String::from_utf8_lossy(&parent_out.stdout).trim().to_string())
+    } else {
+        None
+    };
+
+    // Read the branch's tree into the index when the branch exists. For brand
+    // new repositories/branches, initialise the index from an empty tree.
+    let read_tree = if let Some(parent) = parent_sha.as_deref() {
+        Command::new("git")
+            .args(["-C", repo_dir, "read-tree", parent])
+            .output()
+    } else {
+        Command::new("git")
+            .args(["-C", repo_dir, "read-tree", "--empty"])
+            .output()
+    };
     if let Err(e) = read_tree {
         eprintln!("[repos] read-tree failed: {e}");
         return Err(HttpResponse::InternalServerError()
@@ -682,24 +708,14 @@ fn run_write_sequence(
     }
     let tree_sha = String::from_utf8_lossy(&write_tree.stdout).trim().to_string();
 
-    // Resolve the parent commit for the branch.
-    let parent_out = Command::new("git")
-        .args(["-C", repo_dir, "rev-parse", branch])
-        .output()
-        .map_err(|e| {
-            eprintln!("[repos] rev-parse error: {e}");
-            HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "rev-parse failed"}))
-        })?;
-    if !parent_out.status.success() {
-        return Err(HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": "branch not found"})));
-    }
-    let parent_sha = String::from_utf8_lossy(&parent_out.stdout).trim().to_string();
-
     // Create the commit object with author/committer env vars.
-    let commit_out = Command::new("git")
-        .args(["-C", repo_dir, "commit-tree", &tree_sha, "-p", &parent_sha, "-m", message])
+    let mut commit_cmd = Command::new("git");
+    commit_cmd.args(["-C", repo_dir, "commit-tree", &tree_sha]);
+    if let Some(parent) = parent_sha.as_deref() {
+        commit_cmd.args(["-p", parent]);
+    }
+    let commit_out = commit_cmd
+        .args(["-m", message])
         .env("GIT_AUTHOR_NAME", author_name)
         .env("GIT_AUTHOR_EMAIL", author_email)
         .env("GIT_COMMITTER_NAME", author_name)
@@ -984,16 +1000,49 @@ mod tests {
         assert_eq!(resp.status(), 403);
     }
 
+    #[actix_web::test]
+    async fn test_create_blob_initializes_missing_branch() {
+        let (owner, repo) = seed_empty_repo();
+        let token = make_token(&owner);
+        let app = test::init_service(full_app()).await;
+
+        let body = serde_json::json!({
+            "path": "README.md",
+            "content": BASE64.encode(b"hello"),
+            "message": "feat: initial commit",
+            "branch": "main",
+            "author_name": "Test",
+            "author_email": "t@example.com"
+        });
+        let req = test::TestRequest::post()
+            .uri(&format!("/repositories/{owner}/{repo}/blob"))
+            .insert_header(("Authorization", format!("Bearer {token}")))
+            .set_json(&body)
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 201);
+
+        let req = test::TestRequest::get()
+            .uri(&format!("/repositories/{owner}/{repo}/branches"))
+            .insert_header(("Authorization", format!("Bearer {token}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let branches = body["branches"].as_array().unwrap();
+        assert!(branches.iter().any(|b| b == "main"));
+    }
+
     // ── Helpers for the new endpoint tests ──────────────────────────────────
 
-    fn make_token(sub: &str) -> String {
+    fn make_token_with_username(sub: &str, username: &str) -> String {
         use jsonwebtoken::{encode, EncodingKey, Header};
         use crate::auth::Claims;
         unsafe { std::env::set_var("JWT_SECRET", "test-secret-32-chars-long-enough!!"); }
         let claims = Claims {
             sub: sub.to_string(),
             email: "u@example.com".to_string(),
-            username: sub.to_string(),
+            username: username.to_string(),
             iat: None,
             exp: Some(9_999_999_999),
         };
@@ -1003,6 +1052,10 @@ mod tests {
             &EncodingKey::from_secret(b"test-secret-32-chars-long-enough!!"),
         )
         .unwrap()
+    }
+
+    fn make_token(sub: &str) -> String {
+        make_token_with_username(sub, sub)
     }
 
     /// Create a unique, isolated bare repository on disk and seed it with a
@@ -1065,6 +1118,28 @@ mod tests {
 
         let _ = Command::new("git")
             .args(["-C", &repo_dir_str, "update-ref", "refs/heads/main", &commit_sha])
+            .output()
+            .unwrap();
+
+        (owner, repo_name)
+    }
+
+    /// Create a unique, isolated empty bare repository on disk with no commits.
+    /// Returns the test (owner, repo) name pair.
+    fn seed_empty_repo() -> (String, String) {
+        let tmp_root = std::env::temp_dir().join("git-agent-tests-shared");
+        std::fs::create_dir_all(&tmp_root).unwrap();
+        unsafe { std::env::set_var("REPOS_DIR", &tmp_root); }
+
+        let unique = Uuid::new_v4().simple().to_string();
+        let owner = format!("user{unique}");
+        let repo_name = format!("repo{unique}");
+        let repo_dir = tmp_root.join(&owner).join(format!("{repo_name}.git"));
+        std::fs::create_dir_all(repo_dir.parent().unwrap()).unwrap();
+
+        let repo_dir_str = repo_dir.to_string_lossy().to_string();
+        let _ = Command::new("git")
+            .args(["init", "--bare", &repo_dir_str])
             .output()
             .unwrap();
 
@@ -1192,6 +1267,34 @@ mod tests {
         let body: serde_json::Value = test::read_body_json(resp).await;
         let branches = body["branches"].as_array().unwrap();
         assert!(branches.iter().any(|b| b == "main"));
+    }
+
+    #[actix_web::test]
+    async fn test_owner_routes_allow_username_alias() {
+        let (owner, repo) = seed_repo();
+        let token = make_token_with_username(&owner, "display-user");
+        let app = test::init_service(full_app()).await;
+
+        let req = test::TestRequest::get()
+            .uri(&format!("/repositories/display-user/{repo}/branches"))
+            .insert_header(("Authorization", format!("Bearer {token}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[actix_web::test]
+    async fn test_owner_routes_reject_unrelated_owner() {
+        let (owner, repo) = seed_repo();
+        let token = make_token_with_username(&owner, "display-user");
+        let app = test::init_service(full_app()).await;
+
+        let req = test::TestRequest::get()
+            .uri(&format!("/repositories/another-user/{repo}/branches"))
+            .insert_header(("Authorization", format!("Bearer {token}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 403);
     }
 
     #[actix_web::test]
