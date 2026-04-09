@@ -539,6 +539,86 @@ async fn test_create_update_delete_blob_roundtrip() {
 }
 
 #[actix_web::test]
+async fn test_list_branches_includes_head() {
+    // Cold-load fix: list_branches must surface the symbolic HEAD so the
+    // frontend can default to the real branch instead of the hard-coded
+    // "main" that 500'd repos with a different default.
+    let (owner, repo) = seed_repo();
+    let token = make_token(&owner);
+    let app = test::init_service(full_app()).await;
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/repositories/{owner}/{repo}/branches"))
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = test::read_body_json(resp).await;
+    assert_eq!(body["head"], "main");
+}
+
+#[actix_web::test]
+async fn test_list_commits_unknown_branch_is_empty_not_500() {
+    // Direct-load fix: hitting /commits?branch=main on a fresh repo (or
+    // any repo whose default branch isn't `main`) must NOT 500 with
+    // "git log failed". The handler returns an empty list so the
+    // frontend can render and re-fetch with the resolved HEAD.
+    let (owner, repo) = seed_empty_repo();
+    let token = make_token(&owner);
+    let app = test::init_service(full_app()).await;
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/repositories/{owner}/{repo}/commits?branch=main"))
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = test::read_body_json(resp).await;
+    assert_eq!(body["commits"].as_array().unwrap().len(), 0);
+}
+
+#[actix_web::test]
+async fn test_get_tree_unknown_branch_is_empty_not_404() {
+    // Direct-load fix: hitting /tree?ref=main cold on a repo without that
+    // branch must return an empty tree (200), not a 404 that breaks the
+    // RepoPage's first render.
+    let (owner, repo) = seed_empty_repo();
+    let token = make_token(&owner);
+    let app = test::init_service(full_app()).await;
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/repositories/{owner}/{repo}/tree?ref=main"))
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = test::read_body_json(resp).await;
+    assert_eq!(body["entries"].as_array().unwrap().len(), 0);
+}
+
+#[actix_web::test]
+async fn test_username_owner_route_for_commits_and_tree() {
+    // Regression: commits/tree must accept the username owner segment, not
+    // just the snowflake sub. Direct loading e.g. /adamfoster_3888/repo/commits
+    // resolves to the same on-disk repo as the canonical sub.
+    let (owner_sub, repo) = seed_repo();
+    let token = make_token_with_username(&owner_sub, "adamfoster_3888");
+    let app = test::init_service(full_app()).await;
+
+    for url in [
+        format!("/repositories/adamfoster_3888/{repo}/commits?branch=main"),
+        format!("/repositories/adamfoster_3888/{repo}/tree?ref=main"),
+    ] {
+        let req = test::TestRequest::get()
+            .uri(&url)
+            .insert_header(("Authorization", format!("Bearer {token}")))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200, "expected 200 for {url}");
+    }
+}
+
+#[actix_web::test]
 async fn test_get_diff_returns_seed_commit_diff() {
     let (owner, repo) = seed_repo();
     let token = make_token(&owner);

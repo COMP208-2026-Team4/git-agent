@@ -28,6 +28,19 @@ use super::types::{
 /// Convenience alias: every owner-scoped handler returns this.
 type R = Result<HttpResponse, ApiError>;
 
+/// True if the given branch ref resolves in the bare repo. Used by the
+/// commits/tree handlers to short-circuit with an empty payload instead of
+/// surfacing a 5xx for "branch doesn't exist yet" (which is the cold-load
+/// failure mode the RepoPage hit before it knew the real default branch).
+fn branch_exists(repo_dir: &str, branch: &str) -> bool {
+    let branch_ref = format!("refs/heads/{branch}");
+    Command::new("git")
+        .args(["-C", repo_dir, "rev-parse", "--verify", &branch_ref])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 // ── Top-level repository endpoints ──────────────────────────────────────────
 
 /// `GET /repositories` - lists all bare repositories owned by the caller.
@@ -39,6 +52,15 @@ pub async fn list_repositories(req: HttpRequest) -> R {
         Ok(e) => e,
         // Directory doesn't exist yet - user has no repos.
         Err(_) => return Ok(HttpResponse::Ok().json(Vec::<Repository>::new())),
+    };
+
+    // Use the canonical username (not the snowflake `sub`) as the owner
+    // segment so the frontend can build stable, human-readable URLs. The
+    // on-disk path still lives under `sub` - we resolve that internally.
+    let owner_label = if claims.username.is_empty() {
+        claims.sub.clone()
+    } else {
+        claims.username.clone()
     };
 
     let mut repos = Vec::new();
@@ -53,7 +75,7 @@ pub async fn list_repositories(req: HttpRequest) -> R {
         repos.push(Repository {
             id: Uuid::new_v4().to_string(),
             name,
-            owner: claims.sub.clone(),
+            owner: owner_label.clone(),
             path: path.to_string_lossy().to_string(),
             created_at: String::new(),
         });
@@ -92,11 +114,16 @@ pub async fn create_repository(req: HttpRequest, body: web::Json<CreateRepoReque
 
     // 5. Initialise a bare repository using the git CLI.
     let path = repo_path(&claims.sub, name);
+    let owner_label = if claims.username.is_empty() {
+        claims.sub.clone()
+    } else {
+        claims.username.clone()
+    };
     match Command::new("git").args(["init", "--bare", &path]).output() {
         Ok(o) if o.status.success() => Ok(HttpResponse::Created().json(Repository {
             id: Uuid::new_v4().to_string(),
             name: name.to_string(),
-            owner: claims.sub.clone(),
+            owner: owner_label,
             path,
             created_at: Utc::now().to_rfc3339(),
         })),
@@ -139,7 +166,20 @@ pub async fn list_branches(req: HttpRequest, path: web::Path<(String, String)>) 
             branches.push(stripped);
         }
     }
-    Ok(HttpResponse::Ok().json(json!({ "branches": branches })))
+
+    // Resolve the symbolic HEAD so the frontend can pick a sensible default
+    // branch when navigating to a repo cold (eliminating the "branch=main"
+    // hardcode that 500'd repos with a different default).
+    let head = run_git_str(
+        &dir,
+        &["symbolic-ref", "--short", "HEAD"],
+        internal("git symbolic-ref failed"),
+    )
+    .map(|s| s.trim().to_string())
+    .ok()
+    .filter(|s| !s.is_empty());
+
+    Ok(HttpResponse::Ok().json(json!({ "branches": branches, "head": head })))
 }
 
 /// `GET /repositories/{owner}/{repo}/commits`
@@ -157,6 +197,14 @@ pub async fn list_commits(
     let skip = (page - 1) * limit;
     let limit_arg = format!("-n{limit}");
     let skip_arg = format!("--skip={skip}");
+
+    // If the branch ref doesn't exist (e.g. fresh repo or different default
+    // branch), return an empty list rather than a 500. This stops the cold
+    // RepoPage load from showing a "git log failed" error before the
+    // frontend has had a chance to discover the real default branch.
+    if !branch_exists(&dir, &branch) {
+        return Ok(HttpResponse::Ok().json(json!({ "commits": [] })));
+    }
 
     let stdout = run_git_str(
         &dir,
@@ -205,6 +253,16 @@ pub async fn get_tree(
     } else {
         format!("{git_ref}:{}/", sub_path.trim_end_matches('/'))
     };
+
+    // Empty repo / unknown branch: return an empty tree instead of 404 so the
+    // RepoPage can render its branch selector and resolve the real default.
+    if git_ref != "HEAD" && !branch_exists(&dir, &git_ref) {
+        return Ok(HttpResponse::Ok().json(json!({
+            "ref": git_ref,
+            "path": sub_path,
+            "entries": [],
+        })));
+    }
 
     let stdout = run_git_str(&dir, &["ls-tree", "--long", &spec], not_found("tree not found"))?;
 
