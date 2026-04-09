@@ -367,7 +367,7 @@ async fn test_owner_routes_allow_username_alias_case_insensitive() {
     let token = make_token_with_username(&owner, "Display-User");
     let app = test::init_service(full_app()).await;
 
-    // Path uses a different casing than the claims username — must still pass.
+    // Path uses a different casing than the claims username - must still pass.
     let req = test::TestRequest::get()
         .uri(&format!("/repositories/display-user/{repo}/branches"))
         .insert_header(("Authorization", format!("Bearer {token}")))
@@ -394,7 +394,7 @@ async fn test_owner_routes_reject_unrelated_owner() {
 async fn test_canonical_storage_path_uses_sub_not_username() {
     // Even when the URL owner is the username alias, the on-disk repo lives
     // under `claims.sub`. We seed under `sub`, send the request via the
-    // username alias, and assert success — proving the canonical path is
+    // username alias, and assert success - proving the canonical path is
     // resolved from `sub` regardless of the path label used to reach the route.
     let (owner_sub, repo) = seed_repo();
     let token = make_token_with_username(&owner_sub, "human-name");

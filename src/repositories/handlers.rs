@@ -30,14 +30,14 @@ type R = Result<HttpResponse, ApiError>;
 
 // ── Top-level repository endpoints ──────────────────────────────────────────
 
-/// `GET /repositories` — lists all bare repositories owned by the caller.
+/// `GET /repositories` - lists all bare repositories owned by the caller.
 pub async fn list_repositories(req: HttpRequest) -> R {
     let claims = require_auth(&req)?;
     let dir = user_dir(&claims.sub);
 
     let entries = match fs::read_dir(&dir) {
         Ok(e) => e,
-        // Directory doesn't exist yet — user has no repos.
+        // Directory doesn't exist yet - user has no repos.
         Err(_) => return Ok(HttpResponse::Ok().json(Vec::<Repository>::new())),
     };
 
@@ -61,7 +61,7 @@ pub async fn list_repositories(req: HttpRequest) -> R {
     Ok(HttpResponse::Ok().json(repos))
 }
 
-/// `POST /repositories` — initialise a bare repository for the caller.
+/// `POST /repositories` - initialise a bare repository for the caller.
 pub async fn create_repository(req: HttpRequest, body: web::Json<CreateRepoRequest>) -> R {
     // 1. Zero-trust: validate JWT before doing anything.
     let claims = require_auth(&req)?;
@@ -354,7 +354,7 @@ fn write_response(status: StatusCode, sha: String, path: &str, branch: &str) -> 
     }))
 }
 
-/// `POST /repositories/{owner}/{repo}/blob` — create a new file. 409 on conflict.
+/// `POST /repositories/{owner}/{repo}/blob` - create a new file. 409 on conflict.
 pub async fn create_blob(
     req: HttpRequest,
     path: web::Path<(String, String)>,
@@ -385,7 +385,7 @@ pub async fn create_blob(
     Ok(write_response(StatusCode::CREATED, sha, &body.path, &body.branch))
 }
 
-/// `PUT /repositories/{owner}/{repo}/blob` — overwrite an existing file.
+/// `PUT /repositories/{owner}/{repo}/blob` - overwrite an existing file.
 pub async fn update_blob(
     req: HttpRequest,
     path: web::Path<(String, String)>,
@@ -413,7 +413,7 @@ pub async fn update_blob(
     Ok(write_response(StatusCode::OK, sha, &body.path, &body.branch))
 }
 
-/// `DELETE /repositories/{owner}/{repo}/blob` — remove a file and commit.
+/// `DELETE /repositories/{owner}/{repo}/blob` - remove a file and commit.
 pub async fn delete_blob(
     req: HttpRequest,
     path: web::Path<(String, String)>,

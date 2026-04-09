@@ -40,7 +40,7 @@ async fn main() -> std::io::Result<()> {
         .expect("PORT must be a valid port number");
 
     // Bind to all interfaces by default so other containers on the docker
-    // network can reach this service. NEVER bind to 127.0.0.1 in a container —
+    // network can reach this service. NEVER bind to 127.0.0.1 in a container -
     // it would only be reachable from inside the container itself.
     let bind_addr = env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0".to_string());
 

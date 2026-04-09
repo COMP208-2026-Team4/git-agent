@@ -1,11 +1,11 @@
-//! Repositories module — split into focused submodules:
+//! Repositories module - split into focused submodules:
 //!
-//! - [`errors`]  — domain `ApiError` type and HTTP error helpers
-//! - [`pathing`] — bare-repo filesystem path resolution
-//! - [`authz`]   — JWT/owner validation shared by every owner-scoped route
-//! - [`git`]     — thin git CLI service and the write-sequence plumbing
-//! - [`types`]   — request/response DTOs
-//! - [`handlers`]— HTTP handlers (re-exported below for `main.rs`)
+//! - [`errors`]  - domain `ApiError` type and HTTP error helpers
+//! - [`pathing`] - bare-repo filesystem path resolution
+//! - [`authz`]   - JWT/owner validation shared by every owner-scoped route
+//! - [`git`]     - thin git CLI service and the write-sequence plumbing
+//! - [`types`]   - request/response DTOs
+//! - [`handlers`]- HTTP handlers (re-exported below for `main.rs`)
 
 mod authz;
 pub mod errors;

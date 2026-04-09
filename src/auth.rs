@@ -7,7 +7,7 @@ use crate::repositories::errors::{unauthorized, ApiError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
-    /// Subject — the user's snowflake ID
+    /// Subject - the user's snowflake ID
     pub sub: String,
     pub email: String,
     pub username: String,
