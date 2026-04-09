@@ -51,6 +51,38 @@ async fn main() -> std::io::Result<()> {
                 "/repositories",
                 web::post().to(repositories::create_repository),
             )
+            .route(
+                "/repositories/{owner}/{repo}/branches",
+                web::get().to(repositories::list_branches),
+            )
+            .route(
+                "/repositories/{owner}/{repo}/commits",
+                web::get().to(repositories::list_commits),
+            )
+            .route(
+                "/repositories/{owner}/{repo}/commits/{sha}/diff",
+                web::get().to(repositories::get_diff),
+            )
+            .route(
+                "/repositories/{owner}/{repo}/tree",
+                web::get().to(repositories::get_tree),
+            )
+            .route(
+                "/repositories/{owner}/{repo}/blob",
+                web::get().to(repositories::get_blob),
+            )
+            .route(
+                "/repositories/{owner}/{repo}/blob",
+                web::post().to(repositories::create_blob),
+            )
+            .route(
+                "/repositories/{owner}/{repo}/blob",
+                web::put().to(repositories::update_blob),
+            )
+            .route(
+                "/repositories/{owner}/{repo}/blob",
+                web::delete().to(repositories::delete_blob),
+            )
     })
     .bind(("0.0.0.0", port))?
     .run()
