@@ -39,9 +39,6 @@ async fn main() -> std::io::Result<()> {
         .parse()
         .expect("PORT must be a valid port number");
 
-    // Bind to all interfaces by default so other containers on the docker
-    // network can reach this service. NEVER bind to 127.0.0.1 in a container -
-    // it would only be reachable from inside the container itself.
     let bind_addr = env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0".to_string());
 
     println!("git-agent listening on http://{bind_addr}:{port}");
@@ -52,6 +49,10 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(cors)
             .service(health)
+            // ── Search ──────────────────────────────────────────
+            .route("/search", web::get().to(repositories::search))
+            .route("/git/search", web::get().to(repositories::search))
+            // ── Repo CRUD ───────────────────────────────────────
             .route(
                 "/repositories",
                 web::get().to(repositories::list_repositories),
@@ -60,6 +61,39 @@ async fn main() -> std::io::Result<()> {
                 "/repositories",
                 web::post().to(repositories::create_repository),
             )
+            // ── Profile repos (public listing) ──────────────────
+            .route(
+                "/repositories/profile/{owner}",
+                web::get().to(repositories::profile_repos),
+            )
+            // ── Repo metadata & settings ────────────────────────
+            .route(
+                "/repositories/{owner}/{repo}/meta",
+                web::get().to(repositories::get_repo_meta),
+            )
+            .route(
+                "/repositories/{owner}/{repo}/settings",
+                web::put().to(repositories::update_settings),
+            )
+            // ── Stars ───────────────────────────────────────────
+            .route(
+                "/repositories/{owner}/{repo}/star",
+                web::post().to(repositories::star_repo),
+            )
+            .route(
+                "/repositories/{owner}/{repo}/star",
+                web::delete().to(repositories::unstar_repo),
+            )
+            // ── Collaborators ───────────────────────────────────
+            .route(
+                "/repositories/{owner}/{repo}/collaborators",
+                web::post().to(repositories::add_collaborator),
+            )
+            .route(
+                "/repositories/{owner}/{repo}/collaborators/{user_id}",
+                web::delete().to(repositories::remove_collaborator),
+            )
+            // ── Git read endpoints ──────────────────────────────
             .route(
                 "/repositories/{owner}/{repo}/branches",
                 web::get().to(repositories::list_branches),
@@ -73,9 +107,14 @@ async fn main() -> std::io::Result<()> {
                 web::get().to(repositories::get_diff),
             )
             .route(
+                "/repositories/{owner}/{repo}/commits/{sha}/preview",
+                web::get().to(repositories::commit_preview),
+            )
+            .route(
                 "/repositories/{owner}/{repo}/tree",
                 web::get().to(repositories::get_tree),
             )
+            // ── Git blob CRUD ───────────────────────────────────
             .route(
                 "/repositories/{owner}/{repo}/blob",
                 web::get().to(repositories::get_blob),

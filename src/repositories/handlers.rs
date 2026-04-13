@@ -14,24 +14,23 @@ use uuid::Uuid;
 
 use crate::auth::require_auth;
 
-use super::authz::require_owner;
+use super::authz::{require_authenticated_access, require_owner, require_read_access};
 use super::errors::{
     bad_request, conflict, forbidden_msg, internal, not_found, ApiError,
 };
 use super::git::{path_exists, run_git, run_git_str, run_write_sequence, WriteUpdate};
-use super::pathing::{is_safe_segment, repo_path, user_dir};
+use super::metadata::{read_meta, write_meta, RepoMeta};
+use super::pathing::{is_safe_segment, repo_path, repos_root, user_dir};
 use super::types::{
-    BlobQuery, CommitsQuery, CreateRepoRequest, DeleteFileBody, Repository, TreeQuery,
-    WriteFileBody,
+    BlobQuery, CollaboratorBody, CommitsQuery, CreateRepoRequest, DeleteFileBody,
+    PreviewQuery, Repository, SearchQuery, TreeQuery,
+    UpdateSettingsBody, WriteFileBody,
 };
 
 /// Convenience alias: every owner-scoped handler returns this.
 type R = Result<HttpResponse, ApiError>;
 
-/// True if the given branch ref resolves in the bare repo. Used by the
-/// commits/tree handlers to short-circuit with an empty payload instead of
-/// surfacing a 5xx for "branch doesn't exist yet" (which is the cold-load
-/// failure mode the RepoPage hit before it knew the real default branch).
+/// True if the given branch ref resolves in the bare repo.
 fn branch_exists(repo_dir: &str, branch: &str) -> bool {
     let branch_ref = format!("refs/heads/{branch}");
     Command::new("git")
@@ -39,6 +38,21 @@ fn branch_exists(repo_dir: &str, branch: &str) -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// Get the latest commit timestamp for a repo (epoch seconds).
+fn latest_commit_timestamp(repo_dir: &str) -> Option<i64> {
+    let out = Command::new("git")
+        .args(["-C", repo_dir, "log", "-1", "--format=%at", "--all"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<i64>()
+        .ok()
 }
 
 // ── Top-level repository endpoints ──────────────────────────────────────────
@@ -50,13 +64,9 @@ pub async fn list_repositories(req: HttpRequest) -> R {
 
     let entries = match fs::read_dir(&dir) {
         Ok(e) => e,
-        // Directory doesn't exist yet - user has no repos.
         Err(_) => return Ok(HttpResponse::Ok().json(Vec::<Repository>::new())),
     };
 
-    // Use the canonical username (not the snowflake `sub`) as the owner
-    // segment so the frontend can build stable, human-readable URLs. The
-    // on-disk path still lives under `sub` - we resolve that internally.
     let owner_label = if claims.username.is_empty() {
         claims.sub.clone()
     } else {
@@ -71,13 +81,21 @@ pub async fn list_repositories(req: HttpRequest) -> R {
         }
         let raw = entry.file_name();
         let dir_name = raw.to_string_lossy();
+        if !dir_name.ends_with(".git") {
+            continue;
+        }
         let name = dir_name.strip_suffix(".git").unwrap_or(&dir_name).to_string();
+        let meta = read_meta(&claims.sub, &name);
         repos.push(Repository {
             id: Uuid::new_v4().to_string(),
             name,
             owner: owner_label.clone(),
             path: path.to_string_lossy().to_string(),
-            created_at: String::new(),
+            created_at: meta.created_at.clone(),
+            visibility: meta.visibility.clone(),
+            description: meta.description.clone(),
+            star_count: meta.stars.len(),
+            updated_at: meta.updated_at.clone(),
         });
     }
     Ok(HttpResponse::Ok().json(repos))
@@ -85,10 +103,8 @@ pub async fn list_repositories(req: HttpRequest) -> R {
 
 /// `POST /repositories` - initialise a bare repository for the caller.
 pub async fn create_repository(req: HttpRequest, body: web::Json<CreateRepoRequest>) -> R {
-    // 1. Zero-trust: validate JWT before doing anything.
     let claims = require_auth(&req)?;
 
-    // 2. Validate input.
     let name = body.name.trim();
     if name.is_empty() {
         return Err(bad_request("name is required"));
@@ -99,34 +115,49 @@ pub async fn create_repository(req: HttpRequest, body: web::Json<CreateRepoReque
         ));
     }
 
-    // 3. The user_id in the body must match the authenticated principal.
     if body.user_id != claims.sub {
         return Err(forbidden_msg(
             "user_id in body does not match the authenticated user",
         ));
     }
 
-    // 4. Ensure the parent directory exists.
     if let Err(e) = fs::create_dir_all(user_dir(&claims.sub)) {
         eprintln!("[repos] Failed to create directory: {e}");
         return Err(internal("Failed to create repository directory"));
     }
 
-    // 5. Initialise a bare repository using the git CLI.
     let path = repo_path(&claims.sub, name);
     let owner_label = if claims.username.is_empty() {
         claims.sub.clone()
     } else {
         claims.username.clone()
     };
+
     match Command::new("git").args(["init", "--bare", &path]).output() {
-        Ok(o) if o.status.success() => Ok(HttpResponse::Created().json(Repository {
-            id: Uuid::new_v4().to_string(),
-            name: name.to_string(),
-            owner: owner_label,
-            path,
-            created_at: Utc::now().to_rfc3339(),
-        })),
+        Ok(o) if o.status.success() => {
+            let now = Utc::now().to_rfc3339();
+            let meta = RepoMeta {
+                visibility: "public".to_string(),
+                description: String::new(),
+                stars: Vec::new(),
+                collaborators: Vec::new(),
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            };
+            let _ = write_meta(&claims.sub, name, &meta);
+
+            Ok(HttpResponse::Created().json(Repository {
+                id: Uuid::new_v4().to_string(),
+                name: name.to_string(),
+                owner: owner_label,
+                path,
+                created_at: now.clone(),
+                visibility: "public".to_string(),
+                description: String::new(),
+                star_count: 0,
+                updated_at: now,
+            }))
+        }
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
             eprintln!("[repos] git init failed: {stderr}");
@@ -142,12 +173,12 @@ pub async fn create_repository(req: HttpRequest, body: web::Json<CreateRepoReque
     }
 }
 
-// ── Read endpoints ──────────────────────────────────────────────────────────
+// ── Read endpoints (support public access) ──────────────────────────────────
 
 /// `GET /repositories/{owner}/{repo}/branches`
 pub async fn list_branches(req: HttpRequest, path: web::Path<(String, String)>) -> R {
     let (owner, repo) = path.into_inner();
-    let dir = require_owner(&req, &owner, &repo)?;
+    let (dir, _claims) = require_read_access(&req, &owner, &repo)?;
 
     let stdout = run_git_str(
         &dir,
@@ -167,9 +198,6 @@ pub async fn list_branches(req: HttpRequest, path: web::Path<(String, String)>) 
         }
     }
 
-    // Resolve the symbolic HEAD so the frontend can pick a sensible default
-    // branch when navigating to a repo cold (eliminating the "branch=main"
-    // hardcode that 500'd repos with a different default).
     let head = run_git_str(
         &dir,
         &["symbolic-ref", "--short", "HEAD"],
@@ -189,7 +217,7 @@ pub async fn list_commits(
     query: web::Query<CommitsQuery>,
 ) -> R {
     let (owner, repo) = path.into_inner();
-    let dir = require_owner(&req, &owner, &repo)?;
+    let (dir, _claims) = require_read_access(&req, &owner, &repo)?;
 
     let branch = query.branch.clone().unwrap_or_else(|| "main".to_string());
     let limit = query.limit.unwrap_or(30).clamp(1, 100);
@@ -198,10 +226,6 @@ pub async fn list_commits(
     let limit_arg = format!("-n{limit}");
     let skip_arg = format!("--skip={skip}");
 
-    // If the branch ref doesn't exist (e.g. fresh repo or different default
-    // branch), return an empty list rather than a 500. This stops the cold
-    // RepoPage load from showing a "git log failed" error before the
-    // frontend has had a chance to discover the real default branch.
     if !branch_exists(&dir, &branch) {
         return Ok(HttpResponse::Ok().json(json!({ "commits": [] })));
     }
@@ -244,7 +268,7 @@ pub async fn get_tree(
     query: web::Query<TreeQuery>,
 ) -> R {
     let (owner, repo) = path.into_inner();
-    let dir = require_owner(&req, &owner, &repo)?;
+    let (dir, _claims) = require_read_access(&req, &owner, &repo)?;
 
     let git_ref = query.r#ref.clone().unwrap_or_else(|| "HEAD".to_string());
     let sub_path = query.path.clone().unwrap_or_default();
@@ -254,8 +278,6 @@ pub async fn get_tree(
         format!("{git_ref}:{}/", sub_path.trim_end_matches('/'))
     };
 
-    // Empty repo / unknown branch: return an empty tree instead of 404 so the
-    // RepoPage can render its branch selector and resolve the real default.
     if git_ref != "HEAD" && !branch_exists(&dir, &git_ref) {
         return Ok(HttpResponse::Ok().json(json!({
             "ref": git_ref,
@@ -304,7 +326,7 @@ pub async fn get_blob(
     query: web::Query<BlobQuery>,
 ) -> R {
     let (owner, repo) = path.into_inner();
-    let dir = require_owner(&req, &owner, &repo)?;
+    let (dir, _claims) = require_read_access(&req, &owner, &repo)?;
 
     let git_ref = query.r#ref.clone().unwrap_or_else(|| "HEAD".to_string());
     let spec = format!("{}:{}", git_ref, query.path);
@@ -328,7 +350,7 @@ pub async fn get_blob(
 /// `GET /repositories/{owner}/{repo}/commits/{sha}/diff`
 pub async fn get_diff(req: HttpRequest, path: web::Path<(String, String, String)>) -> R {
     let (owner, repo, sha) = path.into_inner();
-    let dir = require_owner(&req, &owner, &repo)?;
+    let (dir, _claims) = require_read_access(&req, &owner, &repo)?;
     if sha.is_empty() || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(bad_request("invalid sha"));
     }
@@ -495,4 +517,479 @@ pub async fn delete_blob(
         },
     )?;
     Ok(write_response(StatusCode::OK, sha, &body.path, &body.branch))
+}
+
+// ── Settings & metadata ─────────────────────────────────────────────────────
+
+/// `GET /repositories/{owner}/{repo}/meta` - public metadata for a repo.
+pub async fn get_repo_meta(req: HttpRequest, path: web::Path<(String, String)>) -> R {
+    let (owner, repo) = path.into_inner();
+    let (dir, claims) = require_read_access(&req, &owner, &repo)?;
+
+    let canonical_owner = dir
+        .strip_prefix(&format!("{}/", repos_root()))
+        .and_then(|s| s.split('/').next())
+        .unwrap_or(&owner);
+    let meta = read_meta(canonical_owner, &repo);
+
+    let starred_by_me = claims
+        .as_ref()
+        .map(|c| meta.stars.contains(&c.sub))
+        .unwrap_or(false);
+
+    Ok(HttpResponse::Ok().json(json!({
+        "visibility": meta.visibility,
+        "description": meta.description,
+        "star_count": meta.stars.len(),
+        "starred_by_me": starred_by_me,
+        "collaborators": meta.collaborators,
+        "created_at": meta.created_at,
+        "updated_at": meta.updated_at,
+    })))
+}
+
+/// `PUT /repositories/{owner}/{repo}/settings` - update visibility/description.
+pub async fn update_settings(
+    req: HttpRequest,
+    path: web::Path<(String, String)>,
+    body: web::Json<UpdateSettingsBody>,
+) -> R {
+    let (owner, repo) = path.into_inner();
+    let claims = require_auth(&req)?;
+    if !is_safe_segment(&owner) || !is_safe_segment(&repo) {
+        return Err(bad_request("invalid path segment"));
+    }
+    let canonical = super::authz::ensure_owner(&owner, &claims)?;
+    let mut meta = read_meta(&canonical, &repo);
+
+    if let Some(ref vis) = body.visibility {
+        if vis != "public" && vis != "private" {
+            return Err(bad_request("visibility must be 'public' or 'private'"));
+        }
+        meta.visibility = vis.clone();
+    }
+    if let Some(ref desc) = body.description {
+        meta.description = desc.clone();
+    }
+    meta.updated_at = Utc::now().to_rfc3339();
+
+    write_meta(&canonical, &repo, &meta)
+        .map_err(|e| {
+            eprintln!("[repos] failed to write metadata: {e}");
+            internal("failed to save settings")
+        })?;
+
+    Ok(HttpResponse::Ok().json(json!({
+        "visibility": meta.visibility,
+        "description": meta.description,
+    })))
+}
+
+// ── Stars ───────────────────────────────────────────────────────────────────
+
+/// `POST /repositories/{owner}/{repo}/star`
+pub async fn star_repo(req: HttpRequest, path: web::Path<(String, String)>) -> R {
+    let (owner, repo) = path.into_inner();
+    let (dir, claims) = require_authenticated_access(&req, &owner, &repo)?;
+
+    let canonical_owner = dir
+        .strip_prefix(&format!("{}/", repos_root()))
+        .and_then(|s| s.split('/').next())
+        .unwrap_or(&owner);
+
+    let mut meta = read_meta(canonical_owner, &repo);
+    if !meta.stars.contains(&claims.sub) {
+        meta.stars.push(claims.sub.clone());
+        meta.updated_at = Utc::now().to_rfc3339();
+        write_meta(canonical_owner, &repo, &meta).map_err(|e| {
+            eprintln!("[repos] failed to write metadata: {e}");
+            internal("failed to save star")
+        })?;
+    }
+
+    Ok(HttpResponse::Ok().json(json!({
+        "starred": true,
+        "star_count": meta.stars.len(),
+    })))
+}
+
+/// `DELETE /repositories/{owner}/{repo}/star`
+pub async fn unstar_repo(req: HttpRequest, path: web::Path<(String, String)>) -> R {
+    let (owner, repo) = path.into_inner();
+    let (dir, claims) = require_authenticated_access(&req, &owner, &repo)?;
+
+    let canonical_owner = dir
+        .strip_prefix(&format!("{}/", repos_root()))
+        .and_then(|s| s.split('/').next())
+        .unwrap_or(&owner);
+
+    let mut meta = read_meta(canonical_owner, &repo);
+    let before = meta.stars.len();
+    meta.stars.retain(|s| s != &claims.sub);
+    if meta.stars.len() != before {
+        meta.updated_at = Utc::now().to_rfc3339();
+        write_meta(canonical_owner, &repo, &meta).map_err(|e| {
+            eprintln!("[repos] failed to write metadata: {e}");
+            internal("failed to save star")
+        })?;
+    }
+
+    Ok(HttpResponse::Ok().json(json!({
+        "starred": false,
+        "star_count": meta.stars.len(),
+    })))
+}
+
+// ── Collaborators ───────────────────────────────────────────────────────────
+
+/// `POST /repositories/{owner}/{repo}/collaborators`
+pub async fn add_collaborator(
+    req: HttpRequest,
+    path: web::Path<(String, String)>,
+    body: web::Json<CollaboratorBody>,
+) -> R {
+    let (owner, repo) = path.into_inner();
+    let claims = require_auth(&req)?;
+    if !is_safe_segment(&owner) || !is_safe_segment(&repo) {
+        return Err(bad_request("invalid path segment"));
+    }
+    let canonical = super::authz::ensure_owner(&owner, &claims)?;
+    let mut meta = read_meta(&canonical, &repo);
+
+    if meta.collaborators.contains(&body.user_id) {
+        return Err(conflict("user is already a collaborator"));
+    }
+
+    meta.collaborators.push(body.user_id.clone());
+    meta.updated_at = Utc::now().to_rfc3339();
+    write_meta(&canonical, &repo, &meta).map_err(|e| {
+        eprintln!("[repos] failed to write metadata: {e}");
+        internal("failed to add collaborator")
+    })?;
+
+    Ok(HttpResponse::Ok().json(json!({
+        "collaborators": meta.collaborators,
+    })))
+}
+
+/// `DELETE /repositories/{owner}/{repo}/collaborators/{user_id}`
+pub async fn remove_collaborator(
+    req: HttpRequest,
+    path: web::Path<(String, String, String)>,
+) -> R {
+    let (owner, repo, user_id) = path.into_inner();
+    let claims = require_auth(&req)?;
+    if !is_safe_segment(&owner) || !is_safe_segment(&repo) {
+        return Err(bad_request("invalid path segment"));
+    }
+    let canonical = super::authz::ensure_owner(&owner, &claims)?;
+    let mut meta = read_meta(&canonical, &repo);
+
+    let before = meta.collaborators.len();
+    meta.collaborators.retain(|c| c != &user_id);
+    if meta.collaborators.len() == before {
+        return Err(not_found("user is not a collaborator"));
+    }
+
+    meta.updated_at = Utc::now().to_rfc3339();
+    write_meta(&canonical, &repo, &meta).map_err(|e| {
+        eprintln!("[repos] failed to write metadata: {e}");
+        internal("failed to remove collaborator")
+    })?;
+
+    Ok(HttpResponse::Ok().json(json!({
+        "collaborators": meta.collaborators,
+    })))
+}
+
+// ── Search ──────────────────────────────────────────────────────────────────
+
+/// `GET /search` - search repos and commits across all public repositories.
+pub async fn search(req: HttpRequest, query: web::Query<SearchQuery>) -> R {
+    let q = query.q.trim().to_lowercase();
+    if q.is_empty() {
+        return Err(bad_request("query is required"));
+    }
+    let limit = query.limit.unwrap_or(20).clamp(1, 50) as usize;
+    let search_type = query.r#type.clone().unwrap_or_default();
+
+    let claims = crate::auth::optional_auth(&req);
+    let root = repos_root();
+    let mut results = Vec::new();
+
+    let user_dirs = match fs::read_dir(&root) {
+        Ok(d) => d,
+        Err(_) => return Ok(HttpResponse::Ok().json(json!({ "results": [] }))),
+    };
+
+    for user_entry in user_dirs.flatten() {
+        if !user_entry.path().is_dir() {
+            continue;
+        }
+        let uid = user_entry.file_name().to_string_lossy().to_string();
+
+        if let Ok(repo_entries) = fs::read_dir(user_entry.path()) {
+            for repo_entry in repo_entries.flatten() {
+                let fname = repo_entry.file_name().to_string_lossy().to_string();
+                if !fname.ends_with(".git") || !repo_entry.path().is_dir() {
+                    continue;
+                }
+                let repo_name = fname.strip_suffix(".git").unwrap_or(&fname).to_string();
+                let meta = read_meta(&uid, &repo_name);
+
+                // Skip private repos unless caller is owner or collaborator
+                if meta.visibility != "public" {
+                    let allowed = claims.as_ref().map_or(false, |c| {
+                        c.sub == uid || meta.collaborators.contains(&c.sub)
+                    });
+                    if !allowed {
+                        continue;
+                    }
+                }
+
+                // Search repos
+                if search_type.is_empty() || search_type == "repo" {
+                    if repo_name.to_lowercase().contains(&q)
+                        || meta.description.to_lowercase().contains(&q)
+                    {
+                        results.push(json!({
+                            "type": "repo",
+                            "owner": uid,
+                            "name": repo_name,
+                            "description": meta.description,
+                            "visibility": meta.visibility,
+                            "star_count": meta.stars.len(),
+                        }));
+                    }
+                }
+
+                // Search commits
+                if (search_type.is_empty() || search_type == "commit") && results.len() < limit {
+                    let dir = repo_path(&uid, &repo_name);
+                    if let Ok(log) = run_git_str(
+                        &dir,
+                        &["log", "--all", "--format=%H%x00%an%x00%s", "-n100"],
+                        internal("search failed"),
+                    ) {
+                        for line in log.lines() {
+                            let parts: Vec<&str> = line.splitn(3, '\u{0}').collect();
+                            if parts.len() != 3 {
+                                continue;
+                            }
+                            let sha = parts[0];
+                            let author = parts[1];
+                            let msg = parts[2];
+                            if sha.to_lowercase().starts_with(&q)
+                                || msg.to_lowercase().contains(&q)
+                                || author.to_lowercase().contains(&q)
+                            {
+                                results.push(json!({
+                                    "type": "commit",
+                                    "owner": uid,
+                                    "repo": repo_name,
+                                    "sha": sha,
+                                    "author": author,
+                                    "message": msg,
+                                }));
+                            }
+                            if results.len() >= limit {
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if results.len() >= limit {
+                    break;
+                }
+            }
+        }
+        if results.len() >= limit {
+            break;
+        }
+    }
+
+    results.truncate(limit);
+    Ok(HttpResponse::Ok().json(json!({ "results": results })))
+}
+
+// ── Profile repos (public listing for any user) ─────────────────────────────
+
+/// `GET /repositories/profile/{owner}` - list repos visible to the caller.
+pub async fn profile_repos(req: HttpRequest, path: web::Path<String>) -> R {
+    let owner = path.into_inner();
+    if !is_safe_segment(&owner) {
+        return Err(bad_request("invalid owner"));
+    }
+
+    let claims = crate::auth::optional_auth(&req);
+    let root = repos_root();
+
+    // Resolve owner to canonical directory
+    let canonical = resolve_owner_dir(&root, &owner);
+    let dir = format!("{root}/{canonical}");
+
+    let entries = match fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(HttpResponse::Ok().json(Vec::<serde_json::Value>::new())),
+    };
+
+    let is_self = claims.as_ref().map_or(false, |c| {
+        c.sub == canonical || c.username.eq_ignore_ascii_case(&owner)
+    });
+
+    let mut repos = Vec::new();
+    for entry in entries.flatten() {
+        let fname = entry.file_name().to_string_lossy().to_string();
+        if !fname.ends_with(".git") || !entry.path().is_dir() {
+            continue;
+        }
+        let repo_name = fname.strip_suffix(".git").unwrap_or(&fname).to_string();
+        let meta = read_meta(&canonical, &repo_name);
+
+        // Only show private repos to the owner
+        if meta.visibility != "public" && !is_self {
+            continue;
+        }
+
+        let repo_dir = repo_path(&canonical, &repo_name);
+        let last_ts = latest_commit_timestamp(&repo_dir);
+
+        repos.push(json!({
+            "name": repo_name,
+            "owner": owner,
+            "visibility": meta.visibility,
+            "description": meta.description,
+            "star_count": meta.stars.len(),
+            "created_at": meta.created_at,
+            "updated_at": meta.updated_at,
+            "last_commit_timestamp": last_ts,
+        }));
+    }
+
+    // Sort by last commit timestamp descending (most recently updated first)
+    repos.sort_by(|a, b| {
+        let ts_a = a["last_commit_timestamp"].as_i64().unwrap_or(0);
+        let ts_b = b["last_commit_timestamp"].as_i64().unwrap_or(0);
+        ts_b.cmp(&ts_a)
+    });
+
+    Ok(HttpResponse::Ok().json(repos))
+}
+
+fn resolve_owner_dir(root: &str, owner: &str) -> String {
+    // Direct match
+    let direct = format!("{root}/{owner}");
+    if std::path::Path::new(&direct).is_dir() {
+        return owner.to_string();
+    }
+    // Scan for case-insensitive match
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.eq_ignore_ascii_case(owner) {
+                return name;
+            }
+        }
+    }
+    owner.to_string()
+}
+
+// ── Commit preview (branch exploration) ─────────────────────────────────────
+
+/// `GET /repositories/{owner}/{repo}/commits/{sha}/preview`
+/// Returns the tree state at the given commit for branch exploration.
+pub async fn commit_preview(
+    req: HttpRequest,
+    path: web::Path<(String, String, String)>,
+    _query: web::Query<PreviewQuery>,
+) -> R {
+    let (owner, repo, sha) = path.into_inner();
+    let (dir, _claims) = require_read_access(&req, &owner, &repo)?;
+
+    if sha.is_empty() || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(bad_request("invalid sha"));
+    }
+
+    // Get commit info
+    let commit_info = run_git_str(
+        &dir,
+        &["show", "--format=%H%x00%an%x00%ae%x00%at%x00%s", "-s", &sha],
+        not_found("commit not found"),
+    )?;
+
+    let parts: Vec<&str> = commit_info.trim().splitn(5, '\u{0}').collect();
+    let (commit_sha, author_name, author_email, timestamp_str, message) = if parts.len() == 5 {
+        (parts[0], parts[1], parts[2], parts[3], parts[4])
+    } else {
+        (&*sha, "", "", "0", "")
+    };
+
+    // List branches that contain this commit
+    let branches_out = run_git_str(
+        &dir,
+        &["branch", "--contains", &sha, "--format=%(refname:short)"],
+        internal("git branch failed"),
+    )
+    .unwrap_or_default();
+    let branches: Vec<&str> = branches_out
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    // Get the diff for this commit (summary)
+    let diff_stat = run_git_str(
+        &dir,
+        &["diff-tree", "--stat", "--no-commit-id", "-r", &sha],
+        internal("diff-tree failed"),
+    )
+    .unwrap_or_default();
+
+    // Get the full diff
+    let diff = run_git_str(
+        &dir,
+        &["diff-tree", "-p", "--no-commit-id", "-r", &sha],
+        internal("diff-tree failed"),
+    )
+    .unwrap_or_default();
+
+    // Get tree listing at this commit
+    let tree_out = run_git_str(
+        &dir,
+        &["ls-tree", "--long", &format!("{sha}:")],
+        internal("ls-tree failed"),
+    )
+    .unwrap_or_default();
+
+    let tree_entries: Vec<_> = tree_out
+        .lines()
+        .filter_map(|line| {
+            let mut head_and_name = line.splitn(2, '\t');
+            let head = head_and_name.next().unwrap_or("");
+            let name = head_and_name.next().unwrap_or("");
+            let cols: Vec<&str> = head.split_whitespace().collect();
+            (cols.len() >= 4).then(|| {
+                json!({
+                    "mode": cols[0],
+                    "type": cols[1],
+                    "sha": cols[2],
+                    "size": if cols[3] == "-" { None } else { cols[3].parse::<u64>().ok() },
+                    "name": name,
+                })
+            })
+        })
+        .collect();
+
+    Ok(HttpResponse::Ok().json(json!({
+        "sha": commit_sha,
+        "author_name": author_name,
+        "author_email": author_email,
+        "timestamp": timestamp_str.parse::<i64>().unwrap_or(0),
+        "message": message,
+        "branches": branches,
+        "diff_stat": diff_stat.trim(),
+        "diff": diff,
+        "tree": tree_entries,
+    })))
 }

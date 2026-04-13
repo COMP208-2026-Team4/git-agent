@@ -20,6 +20,25 @@ pub struct Claims {
 /// Reads the `Authorization: Bearer <token>` header, verifies the signature
 /// against `JWT_SECRET`, and returns the decoded claims. Returns an
 /// `ApiError` (which renders as a `401`) if the token is missing or invalid.
+/// Non-failing auth: returns `Some(claims)` if a valid token is present,
+/// `None` otherwise. Used by public-repo read endpoints.
+pub fn optional_auth(req: &HttpRequest) -> Option<Claims> {
+    let header = req
+        .headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())?;
+    let token = header.strip_prefix("Bearer ")?;
+
+    let secret = env::var("JWT_SECRET").unwrap_or_default();
+    let key = DecodingKey::from_secret(secret.as_bytes());
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_exp = true;
+
+    decode::<Claims>(token, &key, &validation)
+        .map(|data| data.claims)
+        .ok()
+}
+
 pub fn require_auth(req: &HttpRequest) -> Result<Claims, ApiError> {
     let header = req
         .headers()

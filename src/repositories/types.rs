@@ -15,6 +15,10 @@ pub struct Repository {
     pub owner: String,
     pub path: String,
     pub created_at: String,
+    pub visibility: String,
+    pub description: String,
+    pub star_count: usize,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -54,3 +58,29 @@ pub struct DeleteFileBody {
     pub author_name: String,
     pub author_email: String,
 }
+
+// ── Settings & collaboration DTOs ──────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateSettingsBody {
+    pub visibility: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CollaboratorBody {
+    pub user_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SearchQuery {
+    pub q: String,
+    pub r#type: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PreviewQuery {
+    pub branch: Option<String>,
+}
+
