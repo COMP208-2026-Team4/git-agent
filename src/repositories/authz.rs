@@ -67,6 +67,10 @@ pub fn require_read_access(
     let meta = read_meta(&canonical, repo);
     let dir = repo_path(&canonical, repo);
 
+    if !std::path::Path::new(&dir).is_dir() {
+        return Err(super::errors::not_found("repository not found"));
+    }
+
     if meta.visibility == "public" {
         return Ok((dir, claims));
     }

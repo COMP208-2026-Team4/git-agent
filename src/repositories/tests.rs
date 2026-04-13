@@ -11,8 +11,8 @@ use uuid::Uuid;
 use crate::auth::Claims;
 
 use super::handlers::{
-    create_blob, create_repository, delete_blob, get_blob, get_diff, get_tree, list_branches,
-    list_commits, profile_repos, update_blob,
+    create_blob, create_repository, delete_blob, delete_repository, get_blob, get_diff, get_tree,
+    list_branches, list_commits, profile_repos, update_blob,
 };
 
 // ── Token / fixture helpers ─────────────────────────────────────────────────
@@ -149,6 +149,7 @@ fn full_app() -> actix_web::App<
     >,
 > {
     App::new()
+        .route("/repositories/{owner}/{repo}", web::delete().to(delete_repository))
         .route("/repositories/{owner}/{repo}/branches", web::get().to(list_branches))
         .route("/repositories/{owner}/{repo}/commits", web::get().to(list_commits))
         .route("/repositories/{owner}/{repo}/commits/{sha}/diff", web::get().to(get_diff))
@@ -667,6 +668,78 @@ async fn test_profile_repos_returns_public_repos_by_username() {
         repos.iter().any(|r| r["name"].as_str() == Some(&repo_name)),
         "expected public repo '{repo_name}' in profile listing, got: {body}"
     );
+}
+
+// ── delete_repository ──────────────────────────────────────────────────────
+
+#[actix_web::test]
+async fn test_delete_repo_requires_auth() {
+    let app = test::init_service(full_app()).await;
+    let req = test::TestRequest::delete()
+        .uri("/repositories/u/r")
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), 401);
+}
+
+#[actix_web::test]
+async fn test_delete_repo_non_owner_gets_403() {
+    let (owner, repo) = seed_repo();
+    let other_token = make_token("different-user");
+    let app = test::init_service(full_app()).await;
+
+    let req = test::TestRequest::delete()
+        .uri(&format!("/repositories/{owner}/{repo}"))
+        .insert_header(("Authorization", format!("Bearer {other_token}")))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[actix_web::test]
+async fn test_delete_repo_owner_gets_204_and_subsequent_branches_404() {
+    let (owner, repo) = seed_repo();
+    let token = make_token(&owner);
+    let app = test::init_service(full_app()).await;
+
+    // Owner deletes the repository → 204 No Content
+    let req = test::TestRequest::delete()
+        .uri(&format!("/repositories/{owner}/{repo}"))
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), 204);
+
+    // Subsequent GET /branches must return 404 (repo no longer exists)
+    let req = test::TestRequest::get()
+        .uri(&format!("/repositories/{owner}/{repo}/branches"))
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[actix_web::test]
+async fn test_delete_repo_returns_404_when_already_gone() {
+    let (owner, repo) = seed_repo();
+    let token = make_token(&owner);
+    let app = test::init_service(full_app()).await;
+
+    // First delete succeeds
+    let req = test::TestRequest::delete()
+        .uri(&format!("/repositories/{owner}/{repo}"))
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), 204);
+
+    // Second delete on same repo → 404
+    let req = test::TestRequest::delete()
+        .uri(&format!("/repositories/{owner}/{repo}"))
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), 404);
 }
 
 #[actix_web::test]

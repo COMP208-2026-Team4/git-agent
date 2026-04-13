@@ -61,6 +61,10 @@ async fn main() -> std::io::Result<()> {
                 "/repositories",
                 web::post().to(repositories::create_repository),
             )
+            .route(
+                "/repositories/{owner}/{repo}",
+                web::delete().to(repositories::delete_repository),
+            )
             // ── Profile repos (public listing) ──────────────────
             .route(
                 "/repositories/profile/{owner}",

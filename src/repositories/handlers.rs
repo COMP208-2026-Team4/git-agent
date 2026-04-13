@@ -173,6 +173,34 @@ pub async fn create_repository(req: HttpRequest, body: web::Json<CreateRepoReque
     }
 }
 
+/// `DELETE /repositories/{owner}/{repo}` - permanently remove a repository.
+pub async fn delete_repository(req: HttpRequest, path: web::Path<(String, String)>) -> R {
+    let (owner, repo) = path.into_inner();
+    // require_owner validates auth, ownership, and safe path segments
+    let dir = require_owner(&req, &owner, &repo)?;
+
+    // Derive canonical owner from auth claims (same logic as require_owner)
+    let claims = require_auth(&req)?;
+    let canonical = super::authz::ensure_owner(&owner, &claims)?;
+
+    // Remove the bare repo directory
+    match fs::remove_dir_all(&dir) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(not_found("repository not found"));
+        }
+        Err(e) => {
+            eprintln!("[repos] Failed to remove repo directory: {e}");
+            return Err(internal("failed to remove repository"));
+        }
+    }
+
+    // Best-effort: remove the metadata sidecar (ignore errors if already gone)
+    let _ = fs::remove_file(super::metadata::meta_path(&canonical, &repo));
+
+    Ok(HttpResponse::NoContent().finish())
+}
+
 // ── Read endpoints (support public access) ──────────────────────────────────
 
 /// `GET /repositories/{owner}/{repo}/branches`

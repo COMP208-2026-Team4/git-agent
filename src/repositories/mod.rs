@@ -17,8 +17,8 @@ mod pathing;
 mod types;
 
 pub use handlers::{
-    create_blob, create_repository, delete_blob, get_blob, get_diff, get_tree, list_branches,
-    list_commits, list_repositories, update_blob,
+    create_blob, create_repository, delete_blob, delete_repository, get_blob, get_diff, get_tree,
+    list_branches, list_commits, list_repositories, update_blob,
     // New handlers
     get_repo_meta, update_settings, star_repo, unstar_repo,
     add_collaborator, remove_collaborator,
