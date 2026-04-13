@@ -12,7 +12,7 @@ use crate::auth::Claims;
 
 use super::handlers::{
     create_blob, create_repository, delete_blob, get_blob, get_diff, get_tree, list_branches,
-    list_commits, update_blob,
+    list_commits, profile_repos, update_blob,
 };
 
 // ── Token / fixture helpers ─────────────────────────────────────────────────
@@ -616,6 +616,57 @@ async fn test_username_owner_route_for_commits_and_tree() {
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 200, "expected 200 for {url}");
     }
+}
+
+#[actix_web::test]
+async fn test_profile_repos_returns_public_repos_by_username() {
+    // Regression: profile_repos must resolve a username to the owner's
+    // snowflake-ID directory and return public repos for authenticated callers.
+    let tmp_root = shared_repos_root();
+    let unique = Uuid::new_v4().simple().to_string();
+    let owner_sub = format!("9000{unique}");
+    let username = format!("profileuser{unique}");
+    let repo_name = format!("pub{unique}");
+
+    let repo_dir = tmp_root.join(&owner_sub).join(format!("{repo_name}.git"));
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    Command::new("git")
+        .args(["init", "--bare", &repo_dir.to_string_lossy().to_string()])
+        .output()
+        .unwrap();
+    let meta_path = tmp_root.join(&owner_sub).join(format!("{repo_name}.meta.json"));
+    std::fs::write(
+        &meta_path,
+        serde_json::json!({
+            "visibility": "public",
+            "description": "",
+            "stars": [],
+            "collaborators": [],
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let token = make_token_with_username(&owner_sub, &username);
+    let app = test::init_service(
+        App::new().route("/repositories/profile/{owner}", web::get().to(profile_repos)),
+    )
+    .await;
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/repositories/profile/{username}"))
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = test::read_body_json(resp).await;
+    let repos = body.as_array().unwrap();
+    assert!(
+        repos.iter().any(|r| r["name"].as_str() == Some(&repo_name)),
+        "expected public repo '{repo_name}' in profile listing, got: {body}"
+    );
 }
 
 #[actix_web::test]

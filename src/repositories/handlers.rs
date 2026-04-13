@@ -825,18 +825,22 @@ pub async fn profile_repos(req: HttpRequest, path: web::Path<String>) -> R {
     let claims = crate::auth::optional_auth(&req);
     let root = repos_root();
 
-    // Resolve owner to canonical directory
-    let canonical = resolve_owner_dir(&root, &owner);
+    // Resolve owner username to the canonical on-disk directory (snowflake ID).
+    // When the authenticated caller is the owner we can use claims.sub directly.
+    let is_self = claims.as_ref().map_or(false, |c| {
+        c.sub == owner || c.username.eq_ignore_ascii_case(&owner)
+    });
+    let canonical = if is_self {
+        claims.as_ref().map(|c| c.sub.clone()).unwrap_or_else(|| resolve_owner_dir(&root, &owner))
+    } else {
+        resolve_owner_dir(&root, &owner)
+    };
     let dir = format!("{root}/{canonical}");
 
     let entries = match fs::read_dir(&dir) {
         Ok(e) => e,
         Err(_) => return Ok(HttpResponse::Ok().json(Vec::<serde_json::Value>::new())),
     };
-
-    let is_self = claims.as_ref().map_or(false, |c| {
-        c.sub == canonical || c.username.eq_ignore_ascii_case(&owner)
-    });
 
     let mut repos = Vec::new();
     for entry in entries.flatten() {
