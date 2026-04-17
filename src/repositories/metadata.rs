@@ -1,8 +1,8 @@
 //! JSON sidecar metadata for repositories.
 //!
-//! Each bare repo `{owner}/{name}.git` has a companion
-//! `{owner}/{name}.meta.json` file that stores visibility, description,
-//! star list, collaborator list, and timestamps.
+//! Every bare repo `{owner}/{name}.git` maintains a companion
+//! `{owner}/{name}.meta.json` file - harbouring visibility, description,
+//! star roster, collaborator list, & timestamps.
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use std::fs;
 
 use super::pathing::repos_root;
 
-/// On-disk metadata for a single repository.
+/// On-disk metadata record for a solitary repository.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoMeta {
     pub visibility: String,
@@ -35,12 +35,12 @@ impl Default for RepoMeta {
     }
 }
 
-/// Path to the metadata sidecar file for a given owner + repo name.
+/// Derives the path to the metadata sidecar file for a given owner & repo name.
 pub fn meta_path(owner: &str, name: &str) -> String {
     format!("{}/{owner}/{name}.meta.json", repos_root())
 }
 
-/// Read metadata from disk; returns defaults if the file doesn't exist.
+/// Reads metadata from disk; gracefully yields defaults when the file is absent.
 pub fn read_meta(owner: &str, name: &str) -> RepoMeta {
     let path = meta_path(owner, name);
     match fs::read_to_string(&path) {
@@ -49,7 +49,7 @@ pub fn read_meta(owner: &str, name: &str) -> RepoMeta {
     }
 }
 
-/// Write metadata to disk.
+/// Persists metadata to disk.
 pub fn write_meta(owner: &str, name: &str, meta: &RepoMeta) -> std::io::Result<()> {
     let path = meta_path(owner, name);
     let json = serde_json::to_string_pretty(meta)

@@ -1,6 +1,6 @@
-//! Integration-style tests for the repositories module. The tests stand up a
-//! minimal `actix_web::App`, seed bare repos on disk, and exercise the full
-//! HTTP path through to the git CLI.
+//! Integration-style tests for the repositories module - these erect a
+//! minimal `actix_web::App`, sow bare repos on disk, & rigorously exercise the
+//! full HTTP path through to the git CLI.
 
 use std::process::Command;
 
@@ -15,7 +15,7 @@ use super::handlers::{
     list_branches, list_commits, profile_repos, update_blob,
 };
 
-// ── Token / fixture helpers ─────────────────────────────────────────────────
+// -- Token / fixture helpers --
 
 fn make_token_with_username(sub: &str, username: &str) -> String {
     use jsonwebtoken::{encode, EncodingKey, Header};
@@ -46,8 +46,8 @@ fn shared_repos_root() -> std::path::PathBuf {
     tmp_root
 }
 
-/// Create a unique, isolated bare repository on disk and seed it with a
-/// single commit on `main` containing a `README.md`.
+/// Fabricate a unique, isolated bare repository on disk & sow it with a
+/// solitary commit on `main` harbouring a `README.md`.
 fn seed_repo() -> (String, String) {
     let tmp_root = shared_repos_root();
 
@@ -60,7 +60,7 @@ fn seed_repo() -> (String, String) {
     let repo_dir_str = repo_dir.to_string_lossy().to_string();
     let _ = Command::new("git").args(["init", "--bare", &repo_dir_str]).output().unwrap();
 
-    // hash a README blob
+    // Compute a hash for the README blob
     let mut hash = Command::new("git")
         .args(["-C", &repo_dir_str, "hash-object", "-w", "--stdin"])
         .stdin(std::process::Stdio::piped())
@@ -74,7 +74,7 @@ fn seed_repo() -> (String, String) {
     let blob = hash.wait_with_output().unwrap();
     let blob_sha = String::from_utf8_lossy(&blob.stdout).trim().to_string();
 
-    // build a tree from the blob
+    // Construct a tree from the blob
     let mktree_input = format!("100644 blob {blob_sha}\tREADME.md\n");
     let mut mktree = Command::new("git")
         .args(["-C", &repo_dir_str, "mktree"])
@@ -89,7 +89,7 @@ fn seed_repo() -> (String, String) {
     let tree_out = mktree.wait_with_output().unwrap();
     let tree_sha = String::from_utf8_lossy(&tree_out.stdout).trim().to_string();
 
-    // commit
+    // Forge the commit
     let commit = Command::new("git")
         .args(["-C", &repo_dir_str, "commit-tree", &tree_sha, "-m", "init"])
         .env("GIT_AUTHOR_NAME", "Test")
@@ -108,7 +108,7 @@ fn seed_repo() -> (String, String) {
     (owner, repo_name)
 }
 
-/// Create an empty bare repository with no commits.
+/// Fabricate an empty bare repository - devoid of any commits.
 fn seed_empty_repo() -> (String, String) {
     let tmp_root = shared_repos_root();
 
@@ -160,7 +160,7 @@ fn full_app() -> actix_web::App<
         .route("/repositories/{owner}/{repo}/blob", web::delete().to(delete_blob))
 }
 
-// ── create_repository ───────────────────────────────────────────────────────
+// -- create_repository --
 
 #[actix_web::test]
 async fn test_create_repo_requires_auth() {
@@ -245,7 +245,7 @@ async fn test_create_blob_initializes_missing_branch() {
     assert!(branches.iter().any(|b| b == "main"));
 }
 
-// ── 401 / unauth tests ──────────────────────────────────────────────────────
+// -- 401 / unauth tests --
 
 #[actix_web::test]
 async fn test_list_branches_requires_auth() {
@@ -329,7 +329,7 @@ async fn test_delete_blob_requires_auth() {
     assert_eq!(resp.status(), 401);
 }
 
-// ── Success-shape tests against a seeded bare repo ──────────────────────────
+// -- Success-shape tests against a seeded bare repo --
 
 #[actix_web::test]
 async fn test_list_branches_returns_main() {
@@ -368,7 +368,7 @@ async fn test_owner_routes_allow_username_alias_case_insensitive() {
     let token = make_token_with_username(&owner, "Display-User");
     let app = test::init_service(full_app()).await;
 
-    // Path uses a different casing than the claims username - must still pass.
+    // Path employs a different casing than the claims username - must still pass.
     let req = test::TestRequest::get()
         .uri(&format!("/repositories/display-user/{repo}/branches"))
         .insert_header(("Authorization", format!("Bearer {token}")))
@@ -393,10 +393,10 @@ async fn test_owner_routes_reject_unrelated_owner() {
 
 #[actix_web::test]
 async fn test_canonical_storage_path_uses_sub_not_username() {
-    // Even when the URL owner is the username alias, the on-disk repo lives
-    // under `claims.sub`. We seed under `sub`, send the request via the
-    // username alias, and assert success - proving the canonical path is
-    // resolved from `sub` regardless of the path label used to reach the route.
+    // Even when the URL owner is the username alias, the on-disk repo resides
+    // beneath `claims.sub`. We sow under `sub`, dispatch the request via the
+    // username alias, & assert success - demonstrating the canonical path is
+    // derived from `sub` regardless of the path label used to reach the route.
     let (owner_sub, repo) = seed_repo();
     let token = make_token_with_username(&owner_sub, "human-name");
     let app = test::init_service(full_app()).await;
@@ -470,7 +470,7 @@ async fn test_create_update_delete_blob_roundtrip() {
     let token = make_token(&owner);
     let app = test::init_service(full_app()).await;
 
-    // Create
+    // Spawn file
     let body = serde_json::json!({
         "path": "src/lib.rs",
         "content": BASE64.encode(b"hello"),
@@ -487,7 +487,7 @@ async fn test_create_update_delete_blob_roundtrip() {
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), 201);
 
-    // Conflict on second create
+    // Collision on second creation
     let req = test::TestRequest::post()
         .uri(&format!("/repositories/{owner}/{repo}/blob"))
         .insert_header(("Authorization", format!("Bearer {token}")))
@@ -496,7 +496,7 @@ async fn test_create_update_delete_blob_roundtrip() {
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), 409);
 
-    // Update
+    // Mutate file
     let upd = serde_json::json!({
         "path": "src/lib.rs",
         "content": BASE64.encode(b"world"),
@@ -513,7 +513,7 @@ async fn test_create_update_delete_blob_roundtrip() {
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
 
-    // Delete
+    // Expunge file
     let del = serde_json::json!({
         "path": "src/lib.rs",
         "message": "chore: rm lib",
@@ -529,7 +529,7 @@ async fn test_create_update_delete_blob_roundtrip() {
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), 200);
 
-    // 404 on delete of missing file
+    // 404 upon deletion of a nonexistent file
     let req = test::TestRequest::delete()
         .uri(&format!("/repositories/{owner}/{repo}/blob"))
         .insert_header(("Authorization", format!("Bearer {token}")))
@@ -541,9 +541,9 @@ async fn test_create_update_delete_blob_roundtrip() {
 
 #[actix_web::test]
 async fn test_list_branches_includes_head() {
-    // Cold-load fix: list_branches must surface the symbolic HEAD so the
-    // frontend can default to the real branch instead of the hard-coded
-    // "main" that 500'd repos with a different default.
+    // Cold-load remedy: list_branches must surface the symbolic HEAD so the
+    // frontend can default to the authentic branch rather than the hard-coded
+    // "main" that catastrophically 500'd repos with a non-standard default.
     let (owner, repo) = seed_repo();
     let token = make_token(&owner);
     let app = test::init_service(full_app()).await;
@@ -560,10 +560,10 @@ async fn test_list_branches_includes_head() {
 
 #[actix_web::test]
 async fn test_list_commits_unknown_branch_is_empty_not_500() {
-    // Direct-load fix: hitting /commits?branch=main on a fresh repo (or
-    // any repo whose default branch isn't `main`) must NOT 500 with
-    // "git log failed". The handler returns an empty list so the
-    // frontend can render and re-fetch with the resolved HEAD.
+    // Direct-load remedy: hitting /commits?branch=main on a pristine repo (or
+    // any repo whose default branch diverges from `main`) must NOT 500 with
+    // "git log failed". The handler yields an empty list so the
+    // frontend can render & re-fetch with the resolved HEAD.
     let (owner, repo) = seed_empty_repo();
     let token = make_token(&owner);
     let app = test::init_service(full_app()).await;
@@ -580,9 +580,9 @@ async fn test_list_commits_unknown_branch_is_empty_not_500() {
 
 #[actix_web::test]
 async fn test_get_tree_unknown_branch_is_empty_not_404() {
-    // Direct-load fix: hitting /tree?ref=main cold on a repo without that
-    // branch must return an empty tree (200), not a 404 that breaks the
-    // RepoPage's first render.
+    // Direct-load remedy: hitting /tree?ref=main cold on a repo bereft of that
+    // branch must yield an empty tree (200) - never a 404 that ruptures the
+    // RepoPage's inaugural render.
     let (owner, repo) = seed_empty_repo();
     let token = make_token(&owner);
     let app = test::init_service(full_app()).await;
@@ -599,9 +599,9 @@ async fn test_get_tree_unknown_branch_is_empty_not_404() {
 
 #[actix_web::test]
 async fn test_username_owner_route_for_commits_and_tree() {
-    // Regression: commits/tree must accept the username owner segment, not
-    // just the snowflake sub. Direct loading e.g. /adamfoster_3888/repo/commits
-    // resolves to the same on-disk repo as the canonical sub.
+    // Regression guard: commits/tree must honour the username owner segment, not
+    // merely the snowflake sub. Direct loading e.g. /adamfoster_3888/repo/commits
+    // must reconcile to the same on-disk repo as the canonical sub.
     let (owner_sub, repo) = seed_repo();
     let token = make_token_with_username(&owner_sub, "adamfoster_3888");
     let app = test::init_service(full_app()).await;
@@ -621,8 +621,8 @@ async fn test_username_owner_route_for_commits_and_tree() {
 
 #[actix_web::test]
 async fn test_profile_repos_returns_public_repos_by_username() {
-    // Regression: profile_repos must resolve a username to the owner's
-    // snowflake-ID directory and return public repos for authenticated callers.
+    // Regression guard: profile_repos must reconcile a username to the proprietor's
+    // snowflake-ID directory & surface public repos for authenticated callers.
     let tmp_root = shared_repos_root();
     let unique = Uuid::new_v4().simple().to_string();
     let owner_sub = format!("9000{unique}");
@@ -670,7 +670,7 @@ async fn test_profile_repos_returns_public_repos_by_username() {
     );
 }
 
-// ── delete_repository ──────────────────────────────────────────────────────
+// -- delete_repository --
 
 #[actix_web::test]
 async fn test_delete_repo_requires_auth() {
@@ -702,7 +702,7 @@ async fn test_delete_repo_owner_gets_204_and_subsequent_branches_404() {
     let token = make_token(&owner);
     let app = test::init_service(full_app()).await;
 
-    // Owner deletes the repository → 204 No Content
+    // Proprietor obliterates the repository - 204 No Content
     let req = test::TestRequest::delete()
         .uri(&format!("/repositories/{owner}/{repo}"))
         .insert_header(("Authorization", format!("Bearer {token}")))
@@ -710,7 +710,7 @@ async fn test_delete_repo_owner_gets_204_and_subsequent_branches_404() {
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), 204);
 
-    // Subsequent GET /branches must return 404 (repo no longer exists)
+    // Subsequent GET /branches must yield 404 (repo no longer exists)
     let req = test::TestRequest::get()
         .uri(&format!("/repositories/{owner}/{repo}/branches"))
         .insert_header(("Authorization", format!("Bearer {token}")))
@@ -725,7 +725,7 @@ async fn test_delete_repo_returns_404_when_already_gone() {
     let token = make_token(&owner);
     let app = test::init_service(full_app()).await;
 
-    // First delete succeeds
+    // First deletion succeeds
     let req = test::TestRequest::delete()
         .uri(&format!("/repositories/{owner}/{repo}"))
         .insert_header(("Authorization", format!("Bearer {token}")))
@@ -733,7 +733,7 @@ async fn test_delete_repo_returns_404_when_already_gone() {
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), 204);
 
-    // Second delete on same repo → 404
+    // Second deletion on same repo - 404
     let req = test::TestRequest::delete()
         .uri(&format!("/repositories/{owner}/{repo}"))
         .insert_header(("Authorization", format!("Bearer {token}")))
@@ -748,7 +748,7 @@ async fn test_get_diff_returns_seed_commit_diff() {
     let token = make_token(&owner);
     let app = test::init_service(full_app()).await;
 
-    // Resolve the seed commit SHA via the commits endpoint
+    // Recover the seed commit SHA via the commits endpoint
     let req = test::TestRequest::get()
         .uri(&format!("/repositories/{owner}/{repo}/commits?branch=main"))
         .insert_header(("Authorization", format!("Bearer {token}")))

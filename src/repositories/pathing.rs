@@ -1,7 +1,7 @@
-//! Filesystem path resolution for bare repositories.
+//! Filesystem path derivation for bare repositories.
 //!
-//! All on-disk paths are derived from `REPOS_DIR` (default `./repos`) and the
-//! caller's canonical user id (`claims.sub`).
+//! Every on-disk path originates from `REPOS_DIR` (default `./repos`) &
+//! the caller's canonical user id (`claims.sub`).
 
 use std::env;
 
@@ -17,8 +17,8 @@ pub fn repo_path(owner: &str, name: &str) -> String {
     format!("{}/{owner}/{name}.git", repos_root())
 }
 
-/// Same character class accepted by `create_repository` for repo and owner
-/// path segments. Rejects empty strings.
+/// Mirrors the character class accepted by `create_repository` for repo & owner
+/// path segments. Summarily rejects empty strings.
 pub fn is_safe_segment(s: &str) -> bool {
     !s.is_empty()
         && s.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')

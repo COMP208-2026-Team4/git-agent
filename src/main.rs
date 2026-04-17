@@ -49,10 +49,10 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(cors)
             .service(health)
-            // ── Search ──────────────────────────────────────────
+            // -- Search --
             .route("/search", web::get().to(repositories::search))
             .route("/git/search", web::get().to(repositories::search))
-            // ── Repo CRUD ───────────────────────────────────────
+            // -- Repo CRUD --
             .route(
                 "/repositories",
                 web::get().to(repositories::list_repositories),
@@ -65,12 +65,12 @@ async fn main() -> std::io::Result<()> {
                 "/repositories/{owner}/{repo}",
                 web::delete().to(repositories::delete_repository),
             )
-            // ── Profile repos (public listing) ──────────────────
+            // -- Profile repos (public listing) --
             .route(
                 "/repositories/profile/{owner}",
                 web::get().to(repositories::profile_repos),
             )
-            // ── Repo metadata & settings ────────────────────────
+            // -- Repo metadata & settings --
             .route(
                 "/repositories/{owner}/{repo}/meta",
                 web::get().to(repositories::get_repo_meta),
@@ -79,7 +79,7 @@ async fn main() -> std::io::Result<()> {
                 "/repositories/{owner}/{repo}/settings",
                 web::put().to(repositories::update_settings),
             )
-            // ── Stars ───────────────────────────────────────────
+            // -- Stars --
             .route(
                 "/repositories/{owner}/{repo}/star",
                 web::post().to(repositories::star_repo),
@@ -88,7 +88,7 @@ async fn main() -> std::io::Result<()> {
                 "/repositories/{owner}/{repo}/star",
                 web::delete().to(repositories::unstar_repo),
             )
-            // ── Collaborators ───────────────────────────────────
+            // -- Collaborators --
             .route(
                 "/repositories/{owner}/{repo}/collaborators",
                 web::post().to(repositories::add_collaborator),
@@ -97,7 +97,7 @@ async fn main() -> std::io::Result<()> {
                 "/repositories/{owner}/{repo}/collaborators/{user_id}",
                 web::delete().to(repositories::remove_collaborator),
             )
-            // ── Git read endpoints ──────────────────────────────
+            // -- Git read endpoints --
             .route(
                 "/repositories/{owner}/{repo}/branches",
                 web::get().to(repositories::list_branches),
@@ -118,7 +118,7 @@ async fn main() -> std::io::Result<()> {
                 "/repositories/{owner}/{repo}/tree",
                 web::get().to(repositories::get_tree),
             )
-            // ── Git blob CRUD ───────────────────────────────────
+            // -- Git blob CRUD --
             .route(
                 "/repositories/{owner}/{repo}/blob",
                 web::get().to(repositories::get_blob),

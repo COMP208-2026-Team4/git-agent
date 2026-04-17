@@ -1,8 +1,8 @@
 //! HTTP handlers for the repositories API.
 //!
-//! Handlers stay thin: they parse path/query/body, delegate to the helpers in
-//! `authz`/`git`/`pathing`, and shape the JSON response. All errors flow
-//! through `ApiError` and `?` instead of the previous `match … return resp`
+//! Handlers remain lean - parsing path/query/body, delegating to helpers in
+//! `authz`/`git`/`pathing`, & sculpting the JSON response. All errors cascade
+//! through `ApiError` & `?` in lieu of the erstwhile `match - return resp`
 //! ladders.
 
 use actix_web::{http::StatusCode, web, HttpRequest, HttpResponse};
@@ -27,10 +27,10 @@ use super::types::{
     UpdateSettingsBody, WriteFileBody,
 };
 
-/// Convenience alias: every owner-scoped handler returns this.
+/// Expedient alias: every owner-scoped handler yields this type.
 type R = Result<HttpResponse, ApiError>;
 
-/// True if the given branch ref resolves in the bare repo.
+/// Yields true if the given branch ref resolves within the bare repo.
 fn branch_exists(repo_dir: &str, branch: &str) -> bool {
     let branch_ref = format!("refs/heads/{branch}");
     Command::new("git")
@@ -40,7 +40,7 @@ fn branch_exists(repo_dir: &str, branch: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Get the latest commit timestamp for a repo (epoch seconds).
+/// Retrieve the most recent commit timestamp for a repo (epoch seconds).
 fn latest_commit_timestamp(repo_dir: &str) -> Option<i64> {
     let out = Command::new("git")
         .args(["-C", repo_dir, "log", "-1", "--format=%at", "--all"])
@@ -55,9 +55,9 @@ fn latest_commit_timestamp(repo_dir: &str) -> Option<i64> {
         .ok()
 }
 
-// ── Top-level repository endpoints ──────────────────────────────────────────
+// -- Top-level repository endpoints --
 
-/// `GET /repositories` - lists all bare repositories owned by the caller.
+/// `GET /repositories` - enumerates all bare repositories belonging to the caller.
 pub async fn list_repositories(req: HttpRequest) -> R {
     let claims = require_auth(&req)?;
     let dir = user_dir(&claims.sub);
@@ -101,7 +101,7 @@ pub async fn list_repositories(req: HttpRequest) -> R {
     Ok(HttpResponse::Ok().json(repos))
 }
 
-/// `POST /repositories` - initialise a bare repository for the caller.
+/// `POST /repositories` - instantiates a fresh bare repository for the caller.
 pub async fn create_repository(req: HttpRequest, body: web::Json<CreateRepoRequest>) -> R {
     let claims = require_auth(&req)?;
 
@@ -173,17 +173,17 @@ pub async fn create_repository(req: HttpRequest, body: web::Json<CreateRepoReque
     }
 }
 
-/// `DELETE /repositories/{owner}/{repo}` - permanently remove a repository.
+/// `DELETE /repositories/{owner}/{repo}` - irrevocably obliterates a repository.
 pub async fn delete_repository(req: HttpRequest, path: web::Path<(String, String)>) -> R {
     let (owner, repo) = path.into_inner();
-    // require_owner validates auth, ownership, and safe path segments
+    // require_owner verifies auth, proprietorship, & safe path segments
     let dir = require_owner(&req, &owner, &repo)?;
 
-    // Derive canonical owner from auth claims (same logic as require_owner)
+    // Derive the canonical proprietor from auth claims (mirroring require_owner logic)
     let claims = require_auth(&req)?;
     let canonical = super::authz::ensure_owner(&owner, &claims)?;
 
-    // Remove the bare repo directory
+    // Excise the bare repo directory from disk
     match fs::remove_dir_all(&dir) {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -195,15 +195,15 @@ pub async fn delete_repository(req: HttpRequest, path: web::Path<(String, String
         }
     }
 
-    // Best-effort: remove the metadata sidecar (ignore errors if already gone)
+    // Best-effort: purge the metadata sidecar (errors silently forgiven if absent)
     let _ = fs::remove_file(super::metadata::meta_path(&canonical, &repo));
 
     Ok(HttpResponse::NoContent().finish())
 }
 
-// ── Read endpoints (support public access) ──────────────────────────────────
+// -- Read endpoints (supporting public access) --
 
-/// `GET /repositories/{owner}/{repo}/branches`
+/// `GET /repositories/{owner}/{repo}/branches` - lists extant branches
 pub async fn list_branches(req: HttpRequest, path: web::Path<(String, String)>) -> R {
     let (owner, repo) = path.into_inner();
     let (dir, _claims) = require_read_access(&req, &owner, &repo)?;
@@ -238,7 +238,7 @@ pub async fn list_branches(req: HttpRequest, path: web::Path<(String, String)>) 
     Ok(HttpResponse::Ok().json(json!({ "branches": branches, "head": head })))
 }
 
-/// `GET /repositories/{owner}/{repo}/commits`
+/// `GET /repositories/{owner}/{repo}/commits` - retrieves commit history
 pub async fn list_commits(
     req: HttpRequest,
     path: web::Path<(String, String)>,
@@ -289,7 +289,7 @@ pub async fn list_commits(
     Ok(HttpResponse::Ok().json(json!({ "commits": commits })))
 }
 
-/// `GET /repositories/{owner}/{repo}/tree`
+/// `GET /repositories/{owner}/{repo}/tree` - fetches the filesystem tree
 pub async fn get_tree(
     req: HttpRequest,
     path: web::Path<(String, String)>,
@@ -347,7 +347,7 @@ pub async fn get_tree(
     })))
 }
 
-/// `GET /repositories/{owner}/{repo}/blob`
+/// `GET /repositories/{owner}/{repo}/blob` - retrieves a file blob
 pub async fn get_blob(
     req: HttpRequest,
     path: web::Path<(String, String)>,
@@ -375,7 +375,7 @@ pub async fn get_blob(
     })))
 }
 
-/// `GET /repositories/{owner}/{repo}/commits/{sha}/diff`
+/// `GET /repositories/{owner}/{repo}/commits/{sha}/diff` - retrieves commit diff
 pub async fn get_diff(req: HttpRequest, path: web::Path<(String, String, String)>) -> R {
     let (owner, repo, sha) = path.into_inner();
     let (dir, _claims) = require_read_access(&req, &owner, &repo)?;
@@ -446,7 +446,7 @@ pub async fn get_diff(req: HttpRequest, path: web::Path<(String, String, String)
     })))
 }
 
-// ── Write endpoints ─────────────────────────────────────────────────────────
+// -- Write endpoints --
 
 fn decode_b64(s: &str) -> Result<Vec<u8>, ApiError> {
     BASE64
@@ -462,7 +462,7 @@ fn write_response(status: StatusCode, sha: String, path: &str, branch: &str) -> 
     }))
 }
 
-/// `POST /repositories/{owner}/{repo}/blob` - create a new file. 409 on conflict.
+/// `POST /repositories/{owner}/{repo}/blob` - conjures a new file; yields 409 on collision.
 pub async fn create_blob(
     req: HttpRequest,
     path: web::Path<(String, String)>,
@@ -493,7 +493,7 @@ pub async fn create_blob(
     Ok(write_response(StatusCode::CREATED, sha, &body.path, &body.branch))
 }
 
-/// `PUT /repositories/{owner}/{repo}/blob` - overwrite an existing file.
+/// `PUT /repositories/{owner}/{repo}/blob` - overwrites an extant file.
 pub async fn update_blob(
     req: HttpRequest,
     path: web::Path<(String, String)>,
@@ -521,7 +521,7 @@ pub async fn update_blob(
     Ok(write_response(StatusCode::OK, sha, &body.path, &body.branch))
 }
 
-/// `DELETE /repositories/{owner}/{repo}/blob` - remove a file and commit.
+/// `DELETE /repositories/{owner}/{repo}/blob` - expunges a file & commits the excision.
 pub async fn delete_blob(
     req: HttpRequest,
     path: web::Path<(String, String)>,
@@ -547,9 +547,9 @@ pub async fn delete_blob(
     Ok(write_response(StatusCode::OK, sha, &body.path, &body.branch))
 }
 
-// ── Settings & metadata ─────────────────────────────────────────────────────
+// -- Settings & metadata --
 
-/// `GET /repositories/{owner}/{repo}/meta` - public metadata for a repo.
+/// `GET /repositories/{owner}/{repo}/meta` - exposes public metadata for a repo.
 pub async fn get_repo_meta(req: HttpRequest, path: web::Path<(String, String)>) -> R {
     let (owner, repo) = path.into_inner();
     let (dir, claims) = require_read_access(&req, &owner, &repo)?;
@@ -576,7 +576,7 @@ pub async fn get_repo_meta(req: HttpRequest, path: web::Path<(String, String)>) 
     })))
 }
 
-/// `PUT /repositories/{owner}/{repo}/settings` - update visibility/description.
+/// `PUT /repositories/{owner}/{repo}/settings` - amends visibility & description.
 pub async fn update_settings(
     req: HttpRequest,
     path: web::Path<(String, String)>,
@@ -613,9 +613,9 @@ pub async fn update_settings(
     })))
 }
 
-// ── Stars ───────────────────────────────────────────────────────────────────
+// -- Stars --
 
-/// `POST /repositories/{owner}/{repo}/star`
+/// `POST /repositories/{owner}/{repo}/star` - bestows a star upon the repository
 pub async fn star_repo(req: HttpRequest, path: web::Path<(String, String)>) -> R {
     let (owner, repo) = path.into_inner();
     let (dir, claims) = require_authenticated_access(&req, &owner, &repo)?;
@@ -641,7 +641,7 @@ pub async fn star_repo(req: HttpRequest, path: web::Path<(String, String)>) -> R
     })))
 }
 
-/// `DELETE /repositories/{owner}/{repo}/star`
+/// `DELETE /repositories/{owner}/{repo}/star` - withdraws a previously bestowed star
 pub async fn unstar_repo(req: HttpRequest, path: web::Path<(String, String)>) -> R {
     let (owner, repo) = path.into_inner();
     let (dir, claims) = require_authenticated_access(&req, &owner, &repo)?;
@@ -668,9 +668,9 @@ pub async fn unstar_repo(req: HttpRequest, path: web::Path<(String, String)>) ->
     })))
 }
 
-// ── Collaborators ───────────────────────────────────────────────────────────
+// -- Collaborators --
 
-/// `POST /repositories/{owner}/{repo}/collaborators`
+/// `POST /repositories/{owner}/{repo}/collaborators` - enlists a new collaborator
 pub async fn add_collaborator(
     req: HttpRequest,
     path: web::Path<(String, String)>,
@@ -700,7 +700,7 @@ pub async fn add_collaborator(
     })))
 }
 
-/// `DELETE /repositories/{owner}/{repo}/collaborators/{user_id}`
+/// `DELETE /repositories/{owner}/{repo}/collaborators/{user_id}` - dismisses a collaborator
 pub async fn remove_collaborator(
     req: HttpRequest,
     path: web::Path<(String, String, String)>,
@@ -730,9 +730,9 @@ pub async fn remove_collaborator(
     })))
 }
 
-// ── Search ──────────────────────────────────────────────────────────────────
+// -- Search --
 
-/// `GET /search` - search repos and commits across all public repositories.
+/// `GET /search` - traverses repos & commits across all publicly accessible repositories.
 pub async fn search(req: HttpRequest, query: web::Query<SearchQuery>) -> R {
     let q = query.q.trim().to_lowercase();
     if q.is_empty() {
@@ -765,7 +765,7 @@ pub async fn search(req: HttpRequest, query: web::Query<SearchQuery>) -> R {
                 let repo_name = fname.strip_suffix(".git").unwrap_or(&fname).to_string();
                 let meta = read_meta(&uid, &repo_name);
 
-                // Skip private repos unless caller is owner or collaborator
+                // Omit private repos unless caller is the proprietor or an enlisted collaborator
                 if meta.visibility != "public" {
                     let allowed = claims.as_ref().map_or(false, |c| {
                         c.sub == uid || meta.collaborators.contains(&c.sub)
@@ -775,7 +775,7 @@ pub async fn search(req: HttpRequest, query: web::Query<SearchQuery>) -> R {
                     }
                 }
 
-                // Search repos
+                // Probe repos
                 if search_type.is_empty() || search_type == "repo" {
                     if repo_name.to_lowercase().contains(&q)
                         || meta.description.to_lowercase().contains(&q)
@@ -791,7 +791,7 @@ pub async fn search(req: HttpRequest, query: web::Query<SearchQuery>) -> R {
                     }
                 }
 
-                // Search commits
+                // Probe commits
                 if (search_type.is_empty() || search_type == "commit") && results.len() < limit {
                     let dir = repo_path(&uid, &repo_name);
                     if let Ok(log) = run_git_str(
@@ -841,9 +841,9 @@ pub async fn search(req: HttpRequest, query: web::Query<SearchQuery>) -> R {
     Ok(HttpResponse::Ok().json(json!({ "results": results })))
 }
 
-// ── Profile repos (public listing for any user) ─────────────────────────────
+// -- Profile repos (public listing for any user) --
 
-/// `GET /repositories/profile/{owner}` - list repos visible to the caller.
+/// `GET /repositories/profile/{owner}` - enumerates repos visible to the caller.
 pub async fn profile_repos(req: HttpRequest, path: web::Path<String>) -> R {
     let owner = path.into_inner();
     if !is_safe_segment(&owner) {
@@ -853,8 +853,8 @@ pub async fn profile_repos(req: HttpRequest, path: web::Path<String>) -> R {
     let claims = crate::auth::optional_auth(&req);
     let root = repos_root();
 
-    // Resolve owner username to the canonical on-disk directory (snowflake ID).
-    // When the authenticated caller is the owner we can use claims.sub directly.
+    // Reconcile the owner username with the canonical on-disk directory (snowflake ID).
+    // When the authenticated caller is the proprietor, claims.sub suffices directly.
     let is_self = claims.as_ref().map_or(false, |c| {
         c.sub == owner || c.username.eq_ignore_ascii_case(&owner)
     });
@@ -879,7 +879,7 @@ pub async fn profile_repos(req: HttpRequest, path: web::Path<String>) -> R {
         let repo_name = fname.strip_suffix(".git").unwrap_or(&fname).to_string();
         let meta = read_meta(&canonical, &repo_name);
 
-        // Only show private repos to the owner
+        // Expose private repos exclusively to the proprietor
         if meta.visibility != "public" && !is_self {
             continue;
         }
@@ -899,7 +899,7 @@ pub async fn profile_repos(req: HttpRequest, path: web::Path<String>) -> R {
         }));
     }
 
-    // Sort by last commit timestamp descending (most recently updated first)
+    // Arrange by last commit timestamp descending (most freshly updated to the fore)
     repos.sort_by(|a, b| {
         let ts_a = a["last_commit_timestamp"].as_i64().unwrap_or(0);
         let ts_b = b["last_commit_timestamp"].as_i64().unwrap_or(0);
@@ -910,12 +910,12 @@ pub async fn profile_repos(req: HttpRequest, path: web::Path<String>) -> R {
 }
 
 fn resolve_owner_dir(root: &str, owner: &str) -> String {
-    // Direct match
+    // Direct concordance
     let direct = format!("{root}/{owner}");
     if std::path::Path::new(&direct).is_dir() {
         return owner.to_string();
     }
-    // Scan for case-insensitive match
+    // Probe for case-insensitive concordance
     if let Ok(entries) = fs::read_dir(root) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
@@ -927,10 +927,10 @@ fn resolve_owner_dir(root: &str, owner: &str) -> String {
     owner.to_string()
 }
 
-// ── Commit preview (branch exploration) ─────────────────────────────────────
+// -- Commit preview (branch exploration) --
 
 /// `GET /repositories/{owner}/{repo}/commits/{sha}/preview`
-/// Returns the tree state at the given commit for branch exploration.
+/// Surfaces the tree state at the designated commit for branch traversal & exploration.
 pub async fn commit_preview(
     req: HttpRequest,
     path: web::Path<(String, String, String)>,
@@ -943,7 +943,7 @@ pub async fn commit_preview(
         return Err(bad_request("invalid sha"));
     }
 
-    // Get commit info
+    // Retrieve commit particulars
     let commit_info = run_git_str(
         &dir,
         &["show", "--format=%H%x00%an%x00%ae%x00%at%x00%s", "-s", &sha],
@@ -957,7 +957,7 @@ pub async fn commit_preview(
         (&*sha, "", "", "0", "")
     };
 
-    // List branches that contain this commit
+    // Enumerate branches harbouring this commit
     let branches_out = run_git_str(
         &dir,
         &["branch", "--contains", &sha, "--format=%(refname:short)"],
@@ -970,7 +970,7 @@ pub async fn commit_preview(
         .filter(|l| !l.is_empty())
         .collect();
 
-    // Get the diff for this commit (summary)
+    // Retrieve the diff for this commit (summarised form)
     let diff_stat = run_git_str(
         &dir,
         &["diff-tree", "--stat", "--no-commit-id", "-r", &sha],
@@ -978,7 +978,7 @@ pub async fn commit_preview(
     )
     .unwrap_or_default();
 
-    // Get the full diff
+    // Retrieve the exhaustive diff
     let diff = run_git_str(
         &dir,
         &["diff-tree", "-p", "--no-commit-id", "-r", &sha],
@@ -986,7 +986,7 @@ pub async fn commit_preview(
     )
     .unwrap_or_default();
 
-    // Get tree listing at this commit
+    // Obtain tree enumeration at this commit
     let tree_out = run_git_str(
         &dir,
         &["ls-tree", "--long", &format!("{sha}:")],

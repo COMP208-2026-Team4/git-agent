@@ -1,7 +1,7 @@
-//! Domain error type used by handlers and helpers.
+//! Domain error type - essential to handlers & helpers alike.
 //!
-//! Implementing `ResponseError` lets handlers return `Result<HttpResponse,
-//! ApiError>` and use `?` instead of repeating `match … return resp` blocks.
+//! Implementing `ResponseError` liberates handlers to return `Result<HttpResponse,
+//! ApiError>` & wield `?` rather than repeating tedious `match - return resp` blocks.
 
 use actix_web::{http::StatusCode, HttpResponse, ResponseError};
 use serde_json::{json, Value};

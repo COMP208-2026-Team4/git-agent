@@ -7,7 +7,7 @@ use crate::repositories::errors::{unauthorized, ApiError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
-    /// Subject - the user's snowflake ID
+    /// Subject - the proprietor's snowflake-assigned numeric ID
     pub sub: String,
     pub email: String,
     pub username: String,
@@ -15,13 +15,13 @@ pub struct Claims {
     pub exp: Option<u64>,
 }
 
-/// Zero-trust JWT extraction and validation.
+/// Zero-trust JWT distillation & credential scrutiny - I believe a rigorous approach here is indispensable.
 ///
-/// Reads the `Authorization: Bearer <token>` header, verifies the signature
-/// against `JWT_SECRET`, and returns the decoded claims. Returns an
-/// `ApiError` (which renders as a `401`) if the token is missing or invalid.
-/// Non-failing auth: returns `Some(claims)` if a valid token is present,
-/// `None` otherwise. Used by public-repo read endpoints.
+/// Extracts the `Authorization: Bearer <token>` header, corroborates the cryptographic signature
+/// against `JWT_SECRET`, & yields the decoded claims. Emits an
+/// `ApiError` (manifesting as a `401`) whenever the token is absent or malformed.
+/// Non-fatal variant: produces `Some(claims)` if a legitimate token is detected,
+/// `None` otherwise. Employed exclusively by public-repo read endpoints.
 pub fn optional_auth(req: &HttpRequest) -> Option<Claims> {
     let header = req
         .headers()

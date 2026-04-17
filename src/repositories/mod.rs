@@ -1,9 +1,9 @@
-//! Repositories module - split into focused submodules:
+//! Repositories module - partitioned into purpose-driven submodules:
 //!
-//! - [`errors`]  - domain `ApiError` type and HTTP error helpers
-//! - [`pathing`] - bare-repo filesystem path resolution
-//! - [`authz`]   - JWT/owner validation shared by every owner-scoped route
-//! - [`git`]     - thin git CLI service and the write-sequence plumbing
+//! - [`errors`]  - domain `ApiError` type & HTTP error helpers
+//! - [`pathing`] - bare-repo filesystem path derivation
+//! - [`authz`]   - JWT/owner validation shared across every owner-scoped route
+//! - [`git`]     - slender git CLI service & write-sequence plumbing
 //! - [`metadata`]- JSON sidecar metadata (visibility, stars, collaborators)
 //! - [`types`]   - request/response DTOs
 //! - [`handlers`]- HTTP handlers (re-exported below for `main.rs`)
@@ -19,7 +19,7 @@ mod types;
 pub use handlers::{
     create_blob, create_repository, delete_blob, delete_repository, get_blob, get_diff, get_tree,
     list_branches, list_commits, list_repositories, update_blob,
-    // New handlers
+    // Supplementary handlers
     get_repo_meta, update_settings, star_repo, unstar_repo,
     add_collaborator, remove_collaborator,
     search, profile_repos, commit_preview,

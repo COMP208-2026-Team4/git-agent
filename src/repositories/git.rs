@@ -1,5 +1,5 @@
-//! Thin git CLI service: command builders, write-sequence plumbing, and the
-//! per-repository write lock that keeps concurrent index updates safe.
+//! Slender git CLI service: command fabricators, write-sequence plumbing, &
+//! the per-repository write lock that holds concurrent index mutations in check.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -10,19 +10,18 @@ use uuid::Uuid;
 
 use super::errors::{internal, ApiError};
 
-/// Build a `git -C <repo_dir>` command.
+/// Fabricate a `git -C <repo_dir>` command ready for invocation.
 fn git_in(repo_dir: &str) -> Command {
     let mut c = Command::new("git");
     c.args(["-C", repo_dir]);
     c
 }
 
-/// Run `git -C <repo_dir> <args>` and return stdout bytes.
+/// Execute `git -C <repo_dir> <args>` & yield stdout bytes.
 ///
-/// Failure to *spawn* git always reports the same uniform message used by the
-/// previous handlers (`Failed to run git command`). A non-zero exit returns the
-/// caller-supplied `on_fail` error so each handler keeps its specific 4xx/5xx
-/// payload.
+/// Inability to *spawn* git invariably surfaces the same uniform message (`Failed to run git command`).
+/// A non-zero exit discharges the caller-supplied `on_fail` error - ensuring each handler
+/// retains its specific 4xx/5xx payload intact.
 pub fn run_git(repo_dir: &str, args: &[&str], on_fail: ApiError) -> Result<Vec<u8>, ApiError> {
     let result = git_in(repo_dir).args(args).output();
     match result {
@@ -38,14 +37,14 @@ pub fn run_git(repo_dir: &str, args: &[&str], on_fail: ApiError) -> Result<Vec<u
     }
 }
 
-/// Convenience wrapper that returns stdout as a UTF-8 lossy string.
+/// Expedient wrapper that surfaces stdout as a UTF-8 lossy string.
 pub fn run_git_str(repo_dir: &str, args: &[&str], on_fail: ApiError) -> Result<String, ApiError> {
     run_git(repo_dir, args, on_fail).map(|b| String::from_utf8_lossy(&b).to_string())
 }
 
-/// Per-repository write lock used to serialise plumbing-based file writes so
-/// the bare repository's index file is never touched by two writers
-/// concurrently.
+/// Per-repository write lock - enlisted to serialise plumbing-based file writes &
+/// ensure the bare repository's index file is never besieged by two concurrent writers
+/// simultaneously.
 fn write_lock(repo: &str) -> Arc<Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
     let map = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -56,7 +55,7 @@ fn write_lock(repo: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
-/// Returns true if `path` exists in the given branch's tree.
+/// Yields true if `path` is present within the given branch's tree.
 pub fn path_exists(repo_dir: &str, branch: &str, path: &str) -> bool {
     let spec = format!("{branch}:{path}");
     Command::new("git")
@@ -71,9 +70,9 @@ pub enum WriteUpdate {
     Remove { path: String },
 }
 
-/// Run a single git plumbing step that should map both spawn-failures and
-/// non-zero exits to the same error label (matching the previous behaviour of
-/// the inline write sequence).
+/// Execute a solitary git plumbing step - mapping both spawn-failures &
+/// non-zero exits onto the same error label (consonant with the erstwhile
+/// behaviour of the inline write sequence).
 fn run_step(repo_dir: &str, args: &[&str], label: &'static str) -> Result<Vec<u8>, ApiError> {
     let result = git_in(repo_dir).args(args).output();
     match result {
@@ -89,8 +88,8 @@ fn run_step(repo_dir: &str, args: &[&str], label: &'static str) -> Result<Vec<u8
     }
 }
 
-/// Apply a single change (add or remove) to a branch and return the new
-/// commit SHA. Atomically serialised against other writers on the same repo.
+/// Apply a solitary mutation (add or removal) to a branch & return the freshly
+/// minted commit SHA. Atomically serialised against concurrent writers on the same repo.
 pub fn run_write_sequence(
     repo_dir: &str,
     branch: &str,
@@ -102,7 +101,7 @@ pub fn run_write_sequence(
     let lock = write_lock(repo_dir);
     let _guard = lock.lock().unwrap();
 
-    // 1. Find parent commit on the branch (if any).
+    // 1. Locate the antecedent commit on the branch (if one exists).
     let branch_ref = format!("refs/heads/{branch}");
     let parent_out = git_in(repo_dir)
         .args(["rev-parse", "--verify", &branch_ref])
@@ -116,24 +115,24 @@ pub fn run_write_sequence(
         .success()
         .then(|| String::from_utf8_lossy(&parent_out.stdout).trim().to_string());
 
-    // 2. Initialise the index from the parent tree (or empty for new branches).
+    // 2. Prime the index from the parent tree (or empty for nascent branches).
     match parent_sha.as_deref() {
         Some(p) => run_step(repo_dir, &["read-tree", p], "read-tree failed")?,
         None => run_step(repo_dir, &["read-tree", "--empty"], "read-tree failed")?,
     };
 
-    // 3. Apply the requested change to the index.
+    // 3. Imprint the requested mutation upon the index.
     match update {
         WriteUpdate::Add { path, content } => stage_add(repo_dir, &path, &content)?,
         WriteUpdate::Remove { path } => stage_remove(repo_dir, &path)?,
     }
 
-    // 4. Persist the index → tree.
+    // 4. Materialise the index - tree.
     let tree_sha = String::from_utf8_lossy(&run_step(repo_dir, &["write-tree"], "write-tree failed")?)
         .trim()
         .to_string();
 
-    // 5. Commit the tree, threading author/committer identity via env.
+    // 5. Commit the tree, weaving author/committer identity through env vars.
     let mut commit = git_in(repo_dir);
     commit.args(["commit-tree", &tree_sha]);
     if let Some(p) = parent_sha.as_deref() {
@@ -156,7 +155,7 @@ pub fn run_write_sequence(
     }
     let new_sha = String::from_utf8_lossy(&commit_out.stdout).trim().to_string();
 
-    // 6. Advance the branch ref.
+    // 6. Propel the branch ref forward.
     run_step(
         repo_dir,
         &["update-ref", &branch_ref, &new_sha],
@@ -203,9 +202,9 @@ fn stage_add(repo_dir: &str, path: &str, content: &[u8]) -> Result<(), ApiError>
 }
 
 fn stage_remove(repo_dir: &str, path: &str) -> Result<(), ApiError> {
-    // `update-index --force-remove` insists on a non-bare repo. Point
-    // GIT_WORK_TREE at a throwaway temp directory so the operation succeeds
-    // without ever touching the (bare) repo's directory.
+    // `update-index --force-remove` demands a non-bare repo. Aim
+    // GIT_WORK_TREE at a disposable temp directory so the operation concludes
+    // without ever encroaching upon the (bare) repo's directory.
     let work_tree = std::env::temp_dir().join(format!("git-agent-wt-{}", Uuid::new_v4().simple()));
     let _ = std::fs::create_dir_all(&work_tree);
     let result = git_in(repo_dir)

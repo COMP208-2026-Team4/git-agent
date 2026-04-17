@@ -1,4 +1,4 @@
-//! Request/response DTOs for the repositories API.
+//! Request/response DTOs for the repositories API - the structural contracts of communication.
 
 use serde::{Deserialize, Serialize};
 
@@ -59,7 +59,7 @@ pub struct DeleteFileBody {
     pub author_email: String,
 }
 
-// ── Settings & collaboration DTOs ──────────────────────────────────────────
+// -- Settings & collaboration DTOs --
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateSettingsBody {
