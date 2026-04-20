@@ -19,6 +19,8 @@ pub struct RepoMeta {
     pub collaborators: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub owner_username: String,
 }
 
 impl Default for RepoMeta {
@@ -31,6 +33,7 @@ impl Default for RepoMeta {
             collaborators: Vec::new(),
             created_at: now.clone(),
             updated_at: now,
+            owner_username: String::new(),
         }
     }
 }

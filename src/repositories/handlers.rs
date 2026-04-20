@@ -143,6 +143,7 @@ pub async fn create_repository(req: HttpRequest, body: web::Json<CreateRepoReque
                 collaborators: Vec::new(),
                 created_at: now.clone(),
                 updated_at: now.clone(),
+                owner_username: owner_label.clone(),
             };
             let _ = write_meta(&claims.sub, name, &meta);
 
@@ -775,6 +776,12 @@ pub async fn search(req: HttpRequest, query: web::Query<SearchQuery>) -> R {
                     }
                 }
 
+                let owner_label = if meta.owner_username.is_empty() {
+                    uid.clone()
+                } else {
+                    meta.owner_username.clone()
+                };
+
                 // Probe repos
                 if search_type.is_empty() || search_type == "repo" {
                     if repo_name.to_lowercase().contains(&q)
@@ -782,7 +789,7 @@ pub async fn search(req: HttpRequest, query: web::Query<SearchQuery>) -> R {
                     {
                         results.push(json!({
                             "type": "repo",
-                            "owner": uid,
+                            "owner": owner_label,
                             "name": repo_name,
                             "description": meta.description,
                             "visibility": meta.visibility,
@@ -813,7 +820,7 @@ pub async fn search(req: HttpRequest, query: web::Query<SearchQuery>) -> R {
                             {
                                 results.push(json!({
                                     "type": "commit",
-                                    "owner": uid,
+                                    "owner": owner_label,
                                     "repo": repo_name,
                                     "sha": sha,
                                     "author": author,
